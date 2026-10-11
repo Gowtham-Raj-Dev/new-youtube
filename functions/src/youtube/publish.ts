@@ -6,7 +6,7 @@ import { COLLECTIONS, type ScheduleDoc, type SettingsDoc, type ShortDoc, type Yo
 import { STORAGE_REGION, TOKEN_ENCRYPTION_KEY, YOUTUBE_CLIENT_SECRET } from "../config";
 import { logActivity, notify } from "../lib/activity";
 import { getAccessToken } from "./connections";
-import { TokenRevokedError } from "./oauth";
+import { MANAGE_SCOPE, TokenRevokedError } from "./oauth";
 import { fetchVideoStatus, setVideoPrivacy } from "./status";
 import { YouTubeUploadError, uploadToYouTube, type UploadSource } from "./upload";
 
@@ -28,7 +28,7 @@ interface Claimed {
 }
 
 type Settlement =
-  | { status: "published"; youtubeVideoId: string }
+  | { status: "published"; youtubeVideoId: string; held: boolean }
   | { status: "failed" | "quota_exceeded"; message: string }
   /** Back in line for the next sweep. */
   | { status: "scheduled"; countAttempt: boolean };
@@ -39,6 +39,8 @@ type Outcome = "published" | "skipped" | "pause_connection" | "stop_run";
 interface Run {
   connectionState: (connectionId: string) => Promise<ConnectionState>;
   prefs: (userId: string) => Promise<NotificationPrefs>;
+  /** Whether this connection may change a video's visibility — only ones made since that permission was asked for. */
+  canManage: (connectionId: string) => Promise<boolean>;
 }
 
 function memo<T>(load: (key: string) => Promise<T>) {
@@ -61,6 +63,10 @@ function startRun(): Run {
     prefs: memo(async (userId) => {
       const snap = await db.collection(COLLECTIONS.settings).doc(userId).get();
       return (snap.get("notifications") as NotificationPrefs | undefined) ?? { processing: true, uploads: true, failures: true };
+    }),
+    canManage: memo(async (connectionId) => {
+      const scopes = (await db.collection(COLLECTIONS.youtubeCredentials).doc(connectionId).get()).get("scopes") as string[] | undefined;
+      return scopes?.includes(MANAGE_SCOPE) ?? false;
     }),
   };
 }
@@ -120,8 +126,9 @@ async function claim(ref: DocumentReference): Promise<Claimed | null> {
 }
 
 /** "Check for copyright first": upload as Unlisted — off the channel page, but viewable enough for a block to show — and go public only once it plays. Only matters for a Short meant to be public. */
-function heldForCheck(schedule: ScheduleDoc, short: ShortDoc): boolean {
-  return schedule.safePublish === true && short.privacy === "public";
+function heldForCheck(schedule: ScheduleDoc, short: ShortDoc, canManage: boolean): boolean {
+  // Without permission to switch it to public afterwards, holding it back would strand it Unlisted — so it goes out public.
+  return schedule.safePublish === true && short.privacy === "public" && canManage;
 }
 
 /** Writes the result of an attempt to the schedule and its Short together. */
@@ -133,10 +140,9 @@ async function settle({ ref, schedule, short }: Claimed, result: Settlement, pre
   const batch = db.batch();
 
   if (result.status === "published") {
-    const { youtubeVideoId } = result;
+    const { youtubeVideoId, held } = result;
     batch.update(ref, { status: "published", youtubeVideoId, errorMessage: null, updatedAt: now });
     // Held back: it went up Unlisted and is released by releaseCheckedShorts once it is confirmed playable.
-    const held = heldForCheck(schedule, short);
     // It lives on YouTube now, so the copy in Storage only costs space. The thumbnail stays for the Shorts page.
     const fileDeleted = await getStorage()
       .bucket()
@@ -225,6 +231,7 @@ async function publishOne(doc: DocumentSnapshot, run: Run): Promise<Outcome> {
     return "skipped";
   }
 
+  const held = heldForCheck(schedule, short, await run.canManage(connectionId));
   let youtubeVideoId: string;
   try {
     const accessToken = await getAccessToken(connectionId);
@@ -236,7 +243,7 @@ async function publishOne(doc: DocumentSnapshot, run: Run): Promise<Outcome> {
     // The Short's own metadata, as last edited — it stays editable until this moment.
     youtubeVideoId = await uploadToYouTube(
       accessToken,
-      { title: short.title, description: short.description, tags: short.tags, categoryId: short.categoryId, privacy: heldForCheck(schedule, short) ? "unlisted" : short.privacy },
+      { title: short.title, description: short.description, tags: short.tags, categoryId: short.categoryId, privacy: held ? "unlisted" : short.privacy },
       source,
     );
   } catch (error) {
@@ -275,7 +282,7 @@ async function publishOne(doc: DocumentSnapshot, run: Run): Promise<Outcome> {
   // Outside the try on purpose: if this write fails the schedule stays `uploading`
   // and is flagged as interrupted, rather than being retried into a duplicate video.
   logger.info("Uploaded to YouTube", { shortId: doc.id, connectionId, youtubeVideoId });
-  await settle(claimed, { status: "published", youtubeVideoId }, prefs);
+  await settle(claimed, { status: "published", youtubeVideoId, held }, prefs);
   return "published";
 }
 
@@ -323,6 +330,7 @@ async function releaseCheckedShorts(run: Run) {
   const db = getFirestore();
   const waiting = await db.collection(COLLECTIONS.shorts).where("pendingPrivacy", "==", "public").limit(PAGE_SIZE).get();
 
+  if (waiting.size > 0) logger.info("Shorts waiting for their copyright check", { count: waiting.size });
   for (const doc of waiting.docs) {
     const short = doc.data() as ShortDoc;
     const age = Date.now() - (short.publishedAt?.toMillis() ?? Date.now());
@@ -354,12 +362,8 @@ async function releaseCheckedShorts(run: Run) {
         continue;
       }
 
-      if (!status.confirmedPlayable) {
-        // Couldn't see it as a viewer yet. Keep waiting, but not for ever.
-        if (age > CHECK_GIVE_UP_MS) await finish("live", "We couldn't confirm it plays for viewers, so it was left Unlisted. Check it in YouTube Studio.", { kind: "warning", title: "Short left Unlisted" });
-        continue;
-      }
-
+      // YouTube's own report (not blocked, not rejected) decides. The viewer's-eye check only adds detail when it
+      // works: from a data centre the watch page often can't be read, and waiting on it stranded clear Shorts Unlisted.
       const released = await setVideoPrivacy(accessToken, short.youtubeVideoId, short.pendingPrivacy);
       if (released) {
         await finish("live", `No blocks reported, so it was made ${short.pendingPrivacy}.`, { kind: "success", title: "Short published" });

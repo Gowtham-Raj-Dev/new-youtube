@@ -5,14 +5,15 @@ export function LogoMark({ className }: { className?: string }) {
   return (
     <span
       className={cn(
-        "relative grid size-8 place-items-center rounded-[10px] bg-[linear-gradient(135deg,#a48bff_0%,#7552ff_55%,#4b2fd6_100%)] shadow-[0_6px_20px_-6px_var(--accent)]",
+        "relative block size-8 rounded-[28%] bg-[linear-gradient(135deg,#a48bff_0%,#7552ff_55%,#4b2fd6_100%)] shadow-[0_6px_20px_-6px_var(--accent)]",
         className,
       )}
     >
-      {/* A vertical frame with a play notch — "long video → Short" */}
-      <svg viewBox="0 0 24 24" className="size-[58%]" fill="none" aria-hidden>
-        <rect x="6.5" y="3" width="11" height="18" rx="2.5" stroke="white" strokeWidth="1.8" />
-        <path d="M10.5 9.2v5.6l4.4-2.8-4.4-2.8Z" fill="white" />
+      {/* A play triangle cut into slices — "one long video → many Shorts". Same drawing as app/icon.svg. */}
+      <svg viewBox="0 0 64 64" className="size-full" fill="white" stroke="white" strokeWidth="3" strokeLinejoin="round" aria-hidden>
+        <path d="M15.5 13 22.5 16.8V47.2L15.5 51Z" />
+        <path d="M29.5 20.6 36.5 24.4V39.6L29.5 43.4Z" />
+        <path d="M43.5 28.2 50.5 32 43.5 35.8Z" />
       </svg>
     </span>
   );

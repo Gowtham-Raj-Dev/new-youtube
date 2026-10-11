@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { BRAND } from "@shortflow/shared";
 import { AuthProvider } from "@/components/providers/auth-provider";
@@ -17,6 +17,10 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: { default: BRAND.name, template: `%s · ${BRAND.name}` },
   description: BRAND.tagline,
+};
+
+export const viewport: Viewport = {
+  themeColor: "#08080a",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

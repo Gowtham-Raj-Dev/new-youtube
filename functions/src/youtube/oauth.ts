@@ -10,6 +10,9 @@ export const YOUTUBE_SCOPES = [
   "https://www.googleapis.com/auth/youtube",
 ] as const;
 
+/** The permission that lets us change a video's visibility after upload. */
+export const MANAGE_SCOPE = "https://www.googleapis.com/auth/youtube";
+
 export interface OAuthClient {
   clientId: string;
   clientSecret: string;

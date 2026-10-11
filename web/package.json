@@ -7,6 +7,7 @@
     "build": "next build && node scripts/fix-export-segments.mjs",
     "start": "npx serve out",
     "lint": "eslint",
+    "icons": "node scripts/generate-icons.mjs",
     "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
