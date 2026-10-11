@@ -1,0 +1,26 @@
+{
+  "name": "shortflow",
+  "private": true,
+  "description": "ShortFlow — Turn Long Videos Into Scheduled Shorts.",
+  "workspaces": [
+    "web",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w web",
+    "build": "npm run build -w web",
+    "lint": "npm run lint -w web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "emulators": "firebase emulators:start --import=.emulator-data --export-on-exit",
+    "deploy:rules": "firebase deploy --only firestore:rules,firestore:indexes,storage",
+    "deploy:hosting": "firebase deploy --only hosting",
+    "test:rules": "firebase emulators:exec --only firestore,storage --project demo-shortflow \"node --test tests/rules.test.mjs\"",
+    "check:firebase": "node scripts/check-firebase.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2"
+  }
+}

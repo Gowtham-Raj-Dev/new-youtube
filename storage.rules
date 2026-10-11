@@ -1,0 +1,53 @@
+rules_version = '2';
+
+// ShortFlow Storage rules. Layout: packages/shared/src/storage-paths.ts
+//
+// Clients may only upload their own source video, and only into a path that a
+// matching `videos/{videoId}` doc (status `uploading`) has already reserved —
+// size and content type must match what that doc declared.
+// Thumbnails and Shorts are produced by the backend; deletions go through the
+// backend so Firestore and Storage never drift apart.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function videoDoc(videoId) {
+      return firestore.get(/databases/(default)/documents/videos/$(videoId)).data;
+    }
+
+    match /users/{uid}/videos/original/{videoId}/{fileName} {
+      allow read: if isOwner(uid);
+
+      allow create: if isOwner(uid)
+        && fileName.matches('source[.](mp4|mov|mkv|webm)')
+        && request.resource.size > 0
+        // 10 GiB — keep in sync with firestore.rules and MAX_SOURCE_VIDEO_BYTES.
+        && request.resource.size <= 10 * 1024 * 1024 * 1024
+        && request.resource.contentType.matches('video/(mp4|quicktime|x-matroska|webm)')
+        && videoDoc(videoId).userId == uid
+        && videoDoc(videoId).status == 'uploading'
+        && videoDoc(videoId).storagePath == 'users/' + uid + '/videos/original/' + videoId + '/' + fileName
+        && videoDoc(videoId).contentType == request.resource.contentType
+        && videoDoc(videoId).fileSize == request.resource.size;
+
+      allow update, delete: if false;
+    }
+
+    match /users/{uid}/videos/thumbnails/{fileName} {
+      allow read: if isOwner(uid);
+      allow write: if false;
+    }
+
+    match /users/{uid}/shorts/{shortId}/{fileName} {
+      allow read: if isOwner(uid);
+      allow write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

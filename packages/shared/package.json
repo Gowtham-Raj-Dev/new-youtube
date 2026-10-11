@@ -1,0 +1,16 @@
+{
+  "name": "@shortflow/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Firestore data model, status enums and Storage path helpers shared by web, functions and worker.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}

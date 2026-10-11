@@ -1,0 +1,237 @@
+rules_version = '2';
+
+// ShortFlow Firestore rules.
+// Contract: packages/shared/src/models.ts — keep both in sync.
+//
+// Principles
+//  - Every document belongs to exactly one user (doc id == uid, or a `userId` field).
+//  - Clients may only write fields that express user intent (titles, metadata, settings).
+//  - Status, progress, YouTube IDs, schedules and tokens are written only by the
+//    backend (Admin SDK bypasses these rules).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helpers ───────────────────────────────────────────────────────────────
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isUser(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function ownsExisting() {
+      return signedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    function isNullableString(v, maxLen) {
+      return v == null || (v is string && v.size() <= maxLen);
+    }
+
+    function isText(v, minLen, maxLen) {
+      return v is string && v.size() >= minLen && v.size() <= maxLen;
+    }
+
+    function isTimezone(v) {
+      return v is string && v.matches('^[A-Za-z_]+(/[A-Za-z0-9_+-]+){0,2}$|^UTC$') && v.size() <= 64;
+    }
+
+    function isPrivacy(v) {
+      return v in ['public', 'unlisted', 'private'];
+    }
+
+    function isTagList(v) {
+      return v is list && v.size() <= 30;
+    }
+
+    // YouTube limits: title ≤ 100 chars, description ≤ 5000 bytes.
+    function isYoutubeMetadata(d) {
+      return isText(d.title, 1, 100)
+        && isText(d.description, 0, 5000)
+        && isTagList(d.tags)
+        && isPrivacy(d.privacy)
+        && d.categoryId is string && d.categoryId.matches('^[0-9]{1,3}$');
+    }
+
+    // ─── users/{uid} ───────────────────────────────────────────────────────────
+
+    match /users/{uid} {
+      allow read: if isUser(uid);
+
+      allow create: if isUser(uid)
+        && incoming().keys().hasOnly(['displayName', 'email', 'photoURL', 'timezone', 'createdAt', 'lastLoginAt', 'plan', 'youtubeConnected'])
+        && incoming().keys().hasAll(['displayName', 'email', 'photoURL', 'timezone', 'createdAt', 'lastLoginAt', 'plan', 'youtubeConnected'])
+        && isNullableString(incoming().displayName, 120)
+        && incoming().email == request.auth.token.get('email', null)
+        && isNullableString(incoming().photoURL, 2048)
+        && isTimezone(incoming().timezone)
+        && incoming().createdAt == request.time
+        && incoming().lastLoginAt == request.time
+        && incoming().plan == 'free'
+        && incoming().youtubeConnected == false;
+
+      allow update: if isUser(uid)
+        && changedKeys().hasOnly(['displayName', 'photoURL', 'timezone', 'lastLoginAt'])
+        && isNullableString(incoming().displayName, 120)
+        && isNullableString(incoming().photoURL, 2048)
+        && isTimezone(incoming().timezone)
+        && (!('lastLoginAt' in changedKeys()) || incoming().lastLoginAt == request.time);
+
+      allow delete: if false;
+    }
+
+    // ─── settings/{uid} ────────────────────────────────────────────────────────
+
+    function isValidSettings(d, uid) {
+      return d.keys().hasOnly(['userId', 'processing', 'publishing', 'automation', 'storage', 'notifications', 'updatedAt'])
+        && d.keys().hasAll(['userId', 'processing', 'publishing', 'automation', 'storage', 'notifications', 'updatedAt'])
+        && d.userId == uid
+        && d.updatedAt == request.time
+
+        && d.processing.keys().hasOnly(['shortDuration', 'cropMode', 'outputQuality', 'clippingStrategy'])
+        && d.processing.shortDuration in [30, 45, 60]
+        && d.processing.cropMode in ['center', 'smart', 'blur', 'fit']
+        && d.processing.outputQuality in ['standard', 'high', 'max']
+        // Smart clipping strategies are rejected until the worker supports them.
+        && d.processing.clippingStrategy in ['fixed']
+
+        && d.publishing.keys().hasOnly(['timezone', 'defaultPrivacy', 'defaultUploadTime', 'titleTemplate', 'defaultDescription', 'defaultTags', 'categoryId'])
+        && isTimezone(d.publishing.timezone)
+        && isPrivacy(d.publishing.defaultPrivacy)
+        && d.publishing.defaultUploadTime is string && d.publishing.defaultUploadTime.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+        && isText(d.publishing.titleTemplate, 1, 200)
+        && isText(d.publishing.defaultDescription, 0, 5000)
+        && isTagList(d.publishing.defaultTags)
+        && d.publishing.categoryId is string && d.publishing.categoryId.matches('^[0-9]{1,3}$')
+
+        && d.automation.keys().hasOnly(['autoProcess', 'autoGenerate', 'autoSchedule', 'autoUpload', 'intervalMinutes', 'publishDays', 'maxPerDay'])
+        && d.automation.autoProcess is bool
+        && d.automation.autoGenerate is bool
+        && d.automation.autoSchedule is bool
+        && d.automation.autoUpload is bool
+        && d.automation.intervalMinutes in [30, 60, 120, 240, 360, 720, 1440]
+        && d.automation.publishDays is list
+        && d.automation.publishDays.hasOnly(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'])
+        && d.automation.maxPerDay is int && d.automation.maxPerDay >= 1 && d.automation.maxPerDay <= 50
+
+        && d.storage.keys().hasOnly(['deleteSourceAfterProcessing'])
+        && d.storage.deleteSourceAfterProcessing is bool
+
+        && d.notifications.keys().hasOnly(['processing', 'uploads', 'failures'])
+        && d.notifications.processing is bool
+        && d.notifications.uploads is bool
+        && d.notifications.failures is bool;
+    }
+
+    match /settings/{uid} {
+      allow read: if isUser(uid);
+      allow create, update: if isUser(uid) && isValidSettings(incoming(), uid);
+      allow delete: if false;
+    }
+
+    // ─── videos/{videoId} ──────────────────────────────────────────────────────
+    // The client creates the doc in `uploading` state before the Storage upload starts.
+    // A Storage trigger verifies the file and moves it to `uploaded`; everything after
+    // that is backend-owned.
+
+    match /videos/{videoId} {
+      allow read: if ownsExisting();
+
+      allow create: if signedIn()
+        && incoming().keys().hasOnly(['userId', 'title', 'fileName', 'storagePath', 'contentType', 'fileSize', 'status', 'createdAt', 'uploadedAt', 'durationSec', 'width', 'height', 'thumbnailPath', 'processingStartedAt', 'processingCompletedAt', 'shortsCount', 'activeJobId', 'errorMessage'])
+        && incoming().keys().hasAll(['userId', 'title', 'fileName', 'storagePath', 'contentType', 'fileSize', 'status', 'createdAt', 'uploadedAt', 'durationSec', 'width', 'height', 'thumbnailPath', 'processingStartedAt', 'processingCompletedAt', 'shortsCount', 'activeJobId', 'errorMessage'])
+        && incoming().userId == request.auth.uid
+        && isText(incoming().title, 1, 200)
+        && isText(incoming().fileName, 1, 255)
+        && incoming().contentType in ['video/mp4', 'video/quicktime', 'video/x-matroska', 'video/webm']
+        // 10 GiB — keep in sync with storage.rules and MAX_SOURCE_VIDEO_BYTES.
+        && incoming().fileSize is int && incoming().fileSize > 0 && incoming().fileSize <= 10737418240
+        && incoming().storagePath.matches('^users/' + request.auth.uid + '/videos/original/' + videoId + '/source[.](mp4|mov|mkv|webm)$')
+        && incoming().status == 'uploading'
+        && incoming().createdAt == request.time
+        && incoming().uploadedAt == null
+        && incoming().durationSec == null
+        && incoming().width == null
+        && incoming().height == null
+        && incoming().thumbnailPath == null
+        && incoming().processingStartedAt == null
+        && incoming().processingCompletedAt == null
+        && incoming().shortsCount == 0
+        && incoming().activeJobId == null
+        && incoming().errorMessage == null;
+
+      allow update: if ownsExisting()
+        && changedKeys().hasOnly(['title'])
+        && isText(incoming().title, 1, 200);
+
+      // Cancelling an unfinished upload. Deleting real videos goes through the
+      // backend so Storage files, Shorts and schedules are cleaned up together.
+      allow delete: if ownsExisting() && resource.data.status == 'uploading';
+    }
+
+    // ─── shorts/{shortId} ──────────────────────────────────────────────────────
+
+    match /shorts/{shortId} {
+      allow read: if ownsExisting();
+      allow create: if false;
+
+      // Metadata edits only, and never while an upload is in flight or done.
+      allow update: if ownsExisting()
+        && resource.data.status in ['ready', 'scheduled', 'failed', 'quota_exceeded']
+        && changedKeys().hasOnly(['title', 'description', 'tags', 'privacy', 'categoryId'])
+        && isYoutubeMetadata(incoming());
+
+      allow delete: if false;
+    }
+
+    // ─── Backend-owned, owner-readable ─────────────────────────────────────────
+    // schedules are created via callable functions so bulk scheduling, timezone
+    // maths and duplicate protection are enforced server-side.
+
+    match /schedules/{shortId} {
+      allow read: if ownsExisting();
+      allow write: if false;
+    }
+
+    match /jobs/{jobId} {
+      allow read: if ownsExisting();
+      allow write: if false;
+    }
+
+    match /youtubeConnections/{connectionId} {
+      allow read: if ownsExisting();
+      allow write: if false;
+    }
+
+    match /activityLogs/{logId} {
+      allow read: if ownsExisting();
+      allow write: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if ownsExisting();
+      allow update: if ownsExisting()
+        && changedKeys().hasOnly(['read'])
+        && incoming().read is bool;
+      allow delete: if ownsExisting();
+      allow create: if false;
+    }
+
+    // ─── Server-only ───────────────────────────────────────────────────────────
+    // Encrypted OAuth refresh tokens. Firestore rules cannot hide individual
+    // fields, so tokens live in their own collection that no client can read.
+
+    match /youtubeCredentials/{connectionId} {
+      allow read, write: if false;
+    }
+  }
+}

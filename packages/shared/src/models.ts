@@ -1,0 +1,295 @@
+/**
+ * ShortFlow Firestore data model.
+ *
+ * Single source of truth for document shapes used by the web app, Cloud Functions
+ * and the FFmpeg worker. `firestore.rules` enforces the same field contracts —
+ * keep both in sync when a field is added or renamed.
+ *
+ * Timestamps are always stored as Firestore Timestamps (UTC). The user's
+ * timezone is only applied when displaying.
+ */
+
+/** Firestore `Timestamp` without importing a specific SDK (client and admin SDKs both satisfy it). */
+export interface TimestampLike {
+  seconds: number;
+  nanoseconds: number;
+  toDate(): Date;
+  toMillis(): number;
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+export const VIDEO_STATUSES = ["uploading", "uploaded", "queued", "processing", "completed", "failed"] as const;
+export type VideoStatus = (typeof VIDEO_STATUSES)[number];
+
+export const SHORT_STATUSES = ["ready", "scheduled", "uploading", "published", "failed", "quota_exceeded"] as const;
+export type ShortStatus = (typeof SHORT_STATUSES)[number];
+
+export const SCHEDULE_STATUSES = ["scheduled", "uploading", "published", "failed", "quota_exceeded"] as const;
+export type ScheduleStatus = (typeof SCHEDULE_STATUSES)[number];
+
+export const JOB_TYPES = ["video_processing", "short_generation", "youtube_upload", "thumbnail_generation"] as const;
+export type JobType = (typeof JOB_TYPES)[number];
+
+export const JOB_STATUSES = ["queued", "processing", "completed", "failed", "quota_exceeded"] as const;
+export type JobStatus = (typeof JOB_STATUSES)[number];
+
+export const PRIVACY_STATUSES = ["public", "unlisted", "private"] as const;
+export type PrivacyStatus = (typeof PRIVACY_STATUSES)[number];
+
+export const SHORT_DURATIONS = [30, 45, 60] as const;
+export type ShortDuration = (typeof SHORT_DURATIONS)[number];
+
+export const CROP_MODES = ["center", "smart", "blur", "fit"] as const;
+export type CropMode = (typeof CROP_MODES)[number];
+
+export const OUTPUT_QUALITIES = ["standard", "high", "max"] as const;
+export type OutputQuality = (typeof OUTPUT_QUALITIES)[number];
+
+/** Pluggable clipping strategies. Only `fixed` ships in v1; the rest are reserved for smart clipping. */
+export const CLIPPING_STRATEGIES = ["fixed", "silence", "scene", "speech", "highlight"] as const;
+export type ClippingStrategy = (typeof CLIPPING_STRATEGIES)[number];
+
+export const SCHEDULE_INTERVALS_MINUTES = [30, 60, 120, 240, 360, 720, 1440] as const;
+export type ScheduleIntervalMinutes = (typeof SCHEDULE_INTERVALS_MINUTES)[number];
+
+export const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+export type Weekday = (typeof WEEKDAYS)[number];
+
+export const ACTIVITY_TYPES = [
+  "VIDEO_UPLOADED",
+  "VIDEO_UPLOAD_FAILED",
+  "VIDEO_DELETED",
+  "VIDEO_PROCESSING_STARTED",
+  "VIDEO_PROCESSING_COMPLETED",
+  "VIDEO_PROCESSING_FAILED",
+  "SHORT_GENERATED",
+  "SHORT_SCHEDULED",
+  "YOUTUBE_CONNECTED",
+  "YOUTUBE_DISCONNECTED",
+  "YOUTUBE_UPLOAD_STARTED",
+  "YOUTUBE_UPLOAD_COMPLETED",
+  "YOUTUBE_UPLOAD_FAILED",
+] as const;
+export type ActivityType = (typeof ACTIVITY_TYPES)[number];
+
+// ─── Collections ──────────────────────────────────────────────────────────────
+
+export const COLLECTIONS = {
+  users: "users",
+  settings: "settings",
+  videos: "videos",
+  shorts: "shorts",
+  schedules: "schedules",
+  jobs: "jobs",
+  youtubeConnections: "youtubeConnections",
+  /** Server-only. Holds encrypted OAuth refresh tokens; clients can never read it. */
+  youtubeCredentials: "youtubeCredentials",
+  /** Server-only. One-time OAuth `state` nonces (CSRF protection), auto-deleted by TTL. */
+  oauthStates: "oauthStates",
+  activityLogs: "activityLogs",
+  notifications: "notifications",
+} as const;
+
+// ─── Documents ────────────────────────────────────────────────────────────────
+
+/** users/{uid} */
+export interface UserDoc {
+  displayName: string | null;
+  email: string | null;
+  photoURL: string | null;
+  timezone: string;
+  createdAt: TimestampLike;
+  lastLoginAt: TimestampLike;
+  /** Server-controlled. */
+  plan: "free" | "pro";
+  /** Server-controlled. */
+  youtubeConnected: boolean;
+}
+
+/** settings/{uid} */
+export interface SettingsDoc {
+  userId: string;
+  processing: {
+    shortDuration: ShortDuration;
+    cropMode: CropMode;
+    outputQuality: OutputQuality;
+    clippingStrategy: ClippingStrategy;
+  };
+  publishing: {
+    timezone: string;
+    defaultPrivacy: PrivacyStatus;
+    /** "HH:mm" in the user's timezone. */
+    defaultUploadTime: string;
+    titleTemplate: string;
+    defaultDescription: string;
+    defaultTags: string[];
+    categoryId: string;
+  };
+  automation: {
+    autoProcess: boolean;
+    autoGenerate: boolean;
+    autoSchedule: boolean;
+    autoUpload: boolean;
+    intervalMinutes: ScheduleIntervalMinutes;
+    publishDays: Weekday[];
+    maxPerDay: number;
+  };
+  storage: {
+    deleteSourceAfterProcessing: boolean;
+  };
+  notifications: {
+    processing: boolean;
+    uploads: boolean;
+    failures: boolean;
+  };
+  updatedAt: TimestampLike;
+}
+
+/** videos/{videoId} */
+export interface VideoDoc {
+  userId: string;
+  title: string;
+  fileName: string;
+  storagePath: string;
+  contentType: string;
+  fileSize: number;
+  status: VideoStatus;
+  createdAt: TimestampLike;
+  // Server-controlled ↓
+  uploadedAt: TimestampLike | null;
+  durationSec: number | null;
+  width: number | null;
+  height: number | null;
+  thumbnailPath: string | null;
+  processingStartedAt: TimestampLike | null;
+  processingCompletedAt: TimestampLike | null;
+  shortsCount: number;
+  activeJobId: string | null;
+  errorMessage: string | null;
+  /** Set when the user deleted the original but kept the Shorts. */
+  sourceDeletedAt?: TimestampLike | null;
+}
+
+/** shorts/{shortId} */
+export interface ShortDoc {
+  userId: string;
+  videoId: string;
+  segmentIndex: number;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  storagePath: string;
+  thumbnailPath: string | null;
+  cropMode: CropMode;
+  status: ShortStatus;
+  createdAt: TimestampLike;
+  // User-editable metadata ↓
+  title: string;
+  description: string;
+  tags: string[];
+  privacy: PrivacyStatus;
+  categoryId: string;
+  // Server-controlled publishing state ↓
+  publishAt: TimestampLike | null;
+  youtubeVideoId: string | null;
+  publishedAt: TimestampLike | null;
+  errorMessage: string | null;
+}
+
+/** schedules/{shortId} — one schedule per Short, keyed by shortId, so a Short can never be double-scheduled. */
+export interface ScheduleDoc {
+  userId: string;
+  shortId: string;
+  connectionId: string;
+  /** UTC instant. */
+  publishAt: TimestampLike;
+  /** IANA zone the user picked, kept for display/editing only. */
+  timezone: string;
+  privacy: PrivacyStatus;
+  status: ScheduleStatus;
+  createdAt: TimestampLike;
+  updatedAt: TimestampLike;
+  // Server-controlled ↓
+  retryCount: number;
+  lastAttemptAt: TimestampLike | null;
+  errorMessage: string | null;
+  youtubeVideoId: string | null;
+}
+
+/** jobs/{jobId} — written only by the backend. */
+export interface JobDoc {
+  userId: string;
+  type: JobType;
+  status: JobStatus;
+  /** videoId for processing jobs, shortId for upload jobs. */
+  sourceId: string;
+  /** 0–100, reported by the worker. */
+  progress: number;
+  /** e.g. "Generating Short 14 / 30". */
+  stage: string | null;
+  completedSteps: number | null;
+  totalSteps: number | null;
+  attempt: number;
+  createdAt: TimestampLike;
+  startedAt: TimestampLike | null;
+  completedAt: TimestampLike | null;
+  error: string | null;
+  /** video_processing only: settings snapshot, so a resumed job cuts the same segments. */
+  processing?: SettingsDoc["processing"];
+  /** Refreshed while a worker holds the job. Null = free to pick up; stale = the worker died. */
+  heartbeatAt?: TimestampLike | null;
+}
+
+/** youtubeConnections/{connectionId} — public channel info, readable by the owner. Tokens live in youtubeCredentials. */
+export interface YoutubeConnectionDoc {
+  userId: string;
+  channelId: string;
+  channelTitle: string;
+  channelHandle: string | null;
+  channelThumbnailUrl: string | null;
+  subscriberCount: number | null;
+  status: "connected" | "expired" | "revoked";
+  createdAt: TimestampLike;
+  updatedAt: TimestampLike;
+}
+
+/** youtubeCredentials/{connectionId} — server-only, same id as the connection. */
+export interface YoutubeCredentialDoc {
+  userId: string;
+  channelId: string;
+  /** AES-256-GCM, bound to the connection id. */
+  encryptedRefreshToken: string;
+  scopes: string[];
+  updatedAt: TimestampLike;
+}
+
+/** oauthStates/{nonce} — server-only. */
+export interface OAuthStateDoc {
+  userId: string;
+  returnOrigin: string;
+  createdAt: TimestampLike;
+  /** TTL field: Firestore deletes the doc after this time. */
+  expiresAt: TimestampLike;
+}
+
+/** activityLogs/{logId} — written only by the backend. */
+export interface ActivityLogDoc {
+  userId: string;
+  type: ActivityType;
+  message: string;
+  refType: "video" | "short" | "schedule" | "youtube" | null;
+  refId: string | null;
+  createdAt: TimestampLike;
+}
+
+/** notifications/{notificationId} — written by the backend; the client may only mark as read. */
+export interface NotificationDoc {
+  userId: string;
+  kind: "success" | "info" | "warning" | "error";
+  title: string;
+  body: string;
+  link: string | null;
+  read: boolean;
+  createdAt: TimestampLike;
+}

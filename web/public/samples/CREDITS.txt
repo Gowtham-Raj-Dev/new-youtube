@@ -1,0 +1,12 @@
+Sample preview clips used on the login page and dashboard.
+
+butterfly, squirrel, foxes, standing, vine, filmstrip
+  Big Buck Bunny — (c) copyright 2008, Blender Foundation / www.bigbuckbunny.org
+  Licensed under Creative Commons Attribution 3.0 (CC BY 3.0)
+
+dragon
+  Sintel — (c) copyright Blender Foundation | durian.blender.org
+  Licensed under Creative Commons Attribution 3.0 (CC BY 3.0)
+
+https://creativecommons.org/licenses/by/3.0/
+Clips were trimmed, cropped to 9:16 and re-encoded (360x640 H.264, no audio).
