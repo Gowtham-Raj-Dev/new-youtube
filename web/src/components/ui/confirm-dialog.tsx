@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "./button";
+import { useScrollLock } from "./dialog";
 
 export function ConfirmDialog({
   open,
@@ -28,10 +30,12 @@ export function ConfirmDialog({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [open, loading, onCancel]);
+  useScrollLock(open);
 
   if (!open) return null;
 
-  return (
+  // On <body>, so it is centred on the screen rather than in the content column.
+  return createPortal(
     <div className="fixed inset-0 z-[60] grid place-items-center p-4" role="dialog" aria-modal aria-labelledby="confirm-title">
       <div className="absolute inset-0 animate-enter bg-black/70 backdrop-blur-sm" onClick={() => !loading && onCancel()} />
       <div className="relative w-full max-w-sm animate-enter rounded-2xl border border-line-strong bg-surface-2 p-6 shadow-2xl shadow-black/60">
@@ -48,6 +52,7 @@ export function ConfirmDialog({
           </Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -4,6 +4,7 @@
 import { Check, Clapperboard } from "lucide-react";
 import { formatDuration, type ShortDoc, type ShortStatus } from "@shortflow/shared";
 import type { WithId } from "@/lib/firebase/hooks";
+import { isBlockedOnYouTube } from "@/lib/shorts";
 import { useStorageUrl } from "@/lib/videos";
 import { formatInZone, toDate } from "@/lib/time";
 import { Card } from "@/components/ui/card";
@@ -42,6 +43,9 @@ export function ShortThumbnail({ short, className }: { short: Pick<ShortDoc, "th
 function StatusLine({ short, timezone }: { short: ShortDoc; timezone: string }) {
   const publishAt = toDate(short.publishAt);
   const publishedAt = toDate(short.publishedAt);
+  if (short.pendingPrivacy) return <span className="text-warning">Unlisted on YouTube — checking for copyright, then it goes {short.pendingPrivacy}</span>;
+  const check = short.youtubeCheck;
+  if (check && (check.state === "blocked" || check.state === "rejected" || check.state === "removed")) return <span className="text-danger">{check.detail}</span>;
   if (short.status === "published" && publishedAt) return <>Published {formatInZone(publishedAt, timezone)}</>;
   if ((short.status === "failed" || short.status === "quota_exceeded") && short.errorMessage) {
     return <span className={short.status === "failed" ? "text-danger" : "text-warning"}>{short.errorMessage}</span>;
@@ -58,12 +62,15 @@ export function ShortCard({
   short,
   timezone,
   selected,
+  copyrightRisk,
   onToggle,
   onOpen,
 }: {
   short: WithId<ShortDoc>;
   timezone: string;
   selected: boolean;
+  /** Not uploaded yet, but another Short cut from the same video was blocked for copyright. */
+  copyrightRisk?: boolean;
   /** Omit for Shorts that can't be queued; no checkbox is shown. */
   onToggle?: () => void;
   onOpen: () => void;
@@ -75,7 +82,13 @@ export function ShortCard({
           <ShortThumbnail short={short} className="transition duration-500 group-hover:scale-[1.03]" />
         </button>
         <div className="pointer-events-none absolute left-2.5 top-2.5">
-          <ShortStatusBadge status={short.status} />
+          {isBlockedOnYouTube(short) ? (
+            <Badge tone="danger">{short.youtubeCheck?.state === "blocked" ? "Copyright block" : "Not on YouTube"}</Badge>
+          ) : copyrightRisk ? (
+            <Badge tone="warning">Copyright risk</Badge>
+          ) : (
+            <ShortStatusBadge status={short.status} />
+          )}
         </div>
         {onToggle && (
           <button
@@ -101,7 +114,7 @@ export function ShortCard({
           {short.title}
         </h3>
         <p className="mt-1 line-clamp-2 text-[12px] text-muted">
-          <StatusLine short={short} timezone={timezone} />
+          {copyrightRisk ? <span className="text-warning">Another part of this video was blocked for copyright. This one will very likely be blocked too.</span> : <StatusLine short={short} timezone={timezone} />}
         </p>
       </button>
     </Card>

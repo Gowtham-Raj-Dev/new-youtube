@@ -1,9 +1,13 @@
 // Google OAuth 2.0 (server-side web flow) for YouTube. Plain fetch — no SDK needed.
 
-/** Least privilege: upload videos + read the connected channel. */
+/**
+ * Upload videos, read the connected channel, and manage videos — the last one
+ * only to switch a Short from Private to public after its copyright check.
+ */
 export const YOUTUBE_SCOPES = [
   "https://www.googleapis.com/auth/youtube.upload",
   "https://www.googleapis.com/auth/youtube.readonly",
+  "https://www.googleapis.com/auth/youtube",
 ] as const;
 
 export interface OAuthClient {

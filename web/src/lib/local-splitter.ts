@@ -1,6 +1,19 @@
-import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
-import { COLLECTIONS, shortFileName, shortIdFor, shortTitle, storagePaths, type Segment, type SettingsDoc, type VideoDoc } from "@shortflow/shared";
+import {
+  BANNER_POSITIONS,
+  COLLECTIONS,
+  newRunId,
+  shortFileName,
+  shortIdFor,
+  shortTitle,
+  storagePaths,
+  type BannerDoc,
+  type BannerPosition,
+  type Segment,
+  type SettingsDoc,
+  type VideoDoc,
+} from "@shortflow/shared";
 import { firebase } from "./firebase/client";
 
 /** The PC helper (`npm run helper`, started by `npm run dev`). It cuts with FFmpeg on this machine, so no cloud compute is used. */
@@ -43,27 +56,54 @@ async function helper(path: string, init?: RequestInit): Promise<Response> {
   return res;
 }
 
+/** Frame size of a video and, if it has black bars baked in, the area that is real picture. */
+export interface SourceFrame {
+  width: number;
+  height: number;
+  crop: { width: number; height: number; x: number; y: number } | null;
+}
+
+/** Measures a source video via the helper, for the preview. Null if the helper is off or can't tell. */
+export async function measureSource(storagePath: string): Promise<SourceFrame | null> {
+  try {
+    const url = await getDownloadURL(storageRef(firebase().storage, storagePath));
+    const res = await fetch(`${HELPER}/frame`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+    return res.ok ? ((await res.json()) as SourceFrame) : null;
+  } catch {
+    return null;
+  }
+}
+
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Cuts `video` into Shorts of `shortDuration` seconds on this PC, then saves
  * each one to Storage and registers it, so it shows on the Shorts page.
- * Returns how many Shorts were made. Parts that already exist are left alone.
+ * Returns how many Shorts were made. Cutting a video again adds a new set.
  */
 export async function splitLocally(
   video: VideoDoc & { id: string },
   shortDuration: number,
   settings: Pick<SettingsDoc, "processing" | "publishing">,
   onProgress: (progress: SplitProgress) => void,
+  chosenBanners: Partial<Record<BannerPosition, BannerDoc>> = {},
+  /** Written on every Short, centred on (x, y) as 0–1 shares of the frame; `{n}` becomes the part number. */
+  label: { template: string; x: number; y: number } | null = null,
 ): Promise<number> {
   const { db, storage } = firebase();
   onProgress({ stage: "Starting", percent: 0 });
   await helper("/health");
 
   const url = await getDownloadURL(storageRef(storage, video.storagePath));
+  const banners: Partial<Record<BannerPosition, { url: string; width: number; height: number }>> = {};
+  for (const position of BANNER_POSITIONS) {
+    const banner = chosenBanners[position];
+    if (banner) banners[position] = { url: await getDownloadURL(storageRef(storage, banner.storagePath)), width: banner.width, height: banner.height };
+  }
   const { cropMode, outputQuality } = settings.processing;
+  const run = newRunId();
   const { jobId } = (await (
-    await helper("/split", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, shortDuration, cropMode, quality: outputQuality }) })
+    await helper("/split", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, shortDuration, cropMode, quality: outputQuality, banners, label }) })
   ).json()) as { jobId: string };
 
   try {
@@ -82,10 +122,8 @@ export async function splitLocally(
       const number = part.index + 1;
       onProgress({ stage: `Saving Short ${number} / ${total}`, percent: 80 + (part.index / total) * 20 });
 
-      const shortId = shortIdFor(video.id, part.index);
+      const shortId = shortIdFor(video.id, run, part.index);
       const shortRef = doc(db, COLLECTIONS.shorts, shortId);
-      // Reading a Short that doesn't exist is denied by the rules, which also means "not there yet".
-      if (await getDoc(shortRef).then((snap) => snap.exists(), () => false)) continue;
 
       const title = shortTitle(settings.publishing.titleTemplate, video.title, number, total);
       const storagePath = storagePaths.shortVideo(video.userId, shortId);

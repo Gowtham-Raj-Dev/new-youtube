@@ -6,7 +6,7 @@ import ffmpegPath from "ffmpeg-static";
 import ffprobe from "@ffprobe-installer/ffprobe";
 import * as logger from "firebase-functions/logger";
 import { getStorage } from "firebase-admin/storage";
-import type { CropMode, OutputQuality } from "@shortflow/shared";
+import { SHORT_HEIGHT, SHORT_WIDTH, type CropMode, type OutputQuality } from "@shortflow/shared";
 
 /** Where ffmpeg reads from. Always a 127.0.0.1 URL, a local path in tests. */
 export interface MediaInput {
@@ -162,26 +162,34 @@ export async function probeMedia(input: MediaInput): Promise<ProbeResult | null>
   };
 }
 
-const SHORT_SIZE = "1080:1920";
 const CRF: Record<OutputQuality, number> = { standard: 26, high: 23, max: 20 };
 
-/** Filter graph that turns any frame shape into 1080×1920, ending in `[v]`. */
-function verticalFilter(cropMode: CropMode): string {
+/** Filter graph that turns the frames on pad `source` into 1080×`height`, ending in `[out]`. */
+function frameFilter(source: string, cropMode: CropMode, height: number, out: string): string {
+  const size = `${SHORT_WIDTH}:${height}`;
   switch (cropMode) {
     case "fit":
-      return `[0:v]scale=${SHORT_SIZE}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${SHORT_SIZE}:(ow-iw)/2:(oh-ih)/2,setsar=1[v]`;
-    case "blur":
+      return `[${source}]scale=${size}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bilinear,pad=${size}:(ow-iw)/2:(oh-ih)/2,setsar=1[${out}]`;
+    case "blur": {
+      // Blurring a quarter-size copy looks the same once scaled up, and costs a fraction of the CPU.
+      const small = `${SHORT_WIDTH / 4}:${2 * Math.round(height / 8)}`;
       return [
-        "[0:v]split=2[bgsrc][fgsrc]",
-        // Blurring a quarter-size copy looks the same once scaled up, and costs a fraction of the CPU.
-        `[bgsrc]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=10:2,scale=${SHORT_SIZE}[bg]`,
-        `[fgsrc]scale=${SHORT_SIZE}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg]`,
-        "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]",
+        `[${source}]split=2[bgsrc][fgsrc]`,
+        `[bgsrc]scale=${small}:force_original_aspect_ratio=increase,crop=${small},boxblur=10:2,scale=${size}:flags=fast_bilinear[bg]`,
+        `[fgsrc]scale=${size}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bilinear[fg]`,
+        `[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[${out}]`,
       ].join(";");
+    }
     default:
       // `center`. Smart framing isn't built yet and falls back to it.
-      return `[0:v]scale=${SHORT_SIZE}:force_original_aspect_ratio=increase,crop=${SHORT_SIZE},setsar=1[v]`;
+      return `[${source}]scale=${size}:force_original_aspect_ratio=increase:flags=bilinear,crop=${size},setsar=1[${out}]`;
   }
+}
+
+/** An image laid across the top or bottom of the Short, at the canvas height `bannerHeight()` gives it. */
+export interface BannerImage {
+  path: string;
+  height: number;
 }
 
 export interface ShortRender {
@@ -189,18 +197,146 @@ export interface ShortRender {
   durationSec: number;
   cropMode: CropMode;
   quality: OutputQuality;
+  /** The video fills whatever is left between the banners. */
+  banners?: { top?: BannerImage; bottom?: BannerImage };
+  /** Defaults to libx264, which works everywhere. */
+  encoder?: VideoEncoder;
+  /** The part of the source frame that is real picture, from `detectCrop()`. */
+  crop?: CropRect | null;
+  /** Text burned onto the Short, centred on (`x`, `y`) — each a 0–1 share of the frame's width and height. */
+  label?: { text: string; x: number; y: number } | null;
+}
+
+/** Label text size and the padding of the dark box behind it, in canvas pixels. The web preview mirrors these. */
+const LABEL_FONT_SIZE = 60;
+const LABEL_BOX = 22;
+
+/**
+ * Bold system font for labels. Only the PC helper draws labels, and it runs on
+ * the user's Windows or Mac. The drive colon is escaped for ffmpeg's filter syntax.
+ */
+const LABEL_FONT = process.platform === "win32" ? "C\\:/Windows/Fonts/arialbd.ttf" : "/System/Library/Fonts/Supplemental/Arial Bold.ttf";
+
+export interface CropRect {
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+}
+
+/**
+ * Finds black bars baked into the picture (a widescreen film inside a 16:9
+ * file, say) by sampling three moments, and returns the area without them.
+ * Null when there are no bars worth removing. The widest area seen wins, so a
+ * dark scene can't make it crop into the picture.
+ */
+export async function detectCrop(input: MediaInput, probe: Pick<ProbeResult, "durationSec" | "width" | "height">): Promise<CropRect | null> {
+  if (!ffmpegPath) return null;
+  let left = probe.width;
+  let top = probe.height;
+  let right = 0;
+  let bottom = 0;
+  for (const at of [0.2, 0.5, 0.8]) {
+    const { stderr } = await run(
+      ffmpegPath,
+      ["-hide_banner", "-nostats", "-v", "info", "-ss", (probe.durationSec * at).toFixed(2), "-i", input.url, "-frames:v", "12", "-vf", "cropdetect=limit=24:round=2:reset=0", "-an", "-f", "null", "-"],
+      60_000,
+    );
+    const found = [...stderr.matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)].pop();
+    if (!found) continue;
+    const [width, height, x, y] = found.slice(1).map(Number);
+    left = Math.min(left, x);
+    top = Math.min(top, y);
+    right = Math.max(right, x + width);
+    bottom = Math.max(bottom, y + height);
+  }
+
+  const crop = { width: right - left, height: bottom - top, x: left, y: top };
+  const sensible = crop.width >= probe.width / 2 && crop.height >= probe.height / 2;
+  const worthIt = crop.width < probe.width * 0.97 || crop.height < probe.height * 0.97;
+  return sensible && worthIt ? crop : null;
+}
+
+/** H.264 encoders, fastest first: the three GPU ones, then software. */
+export const VIDEO_ENCODERS = ["h264_nvenc", "h264_amf", "h264_qsv", "libx264"] as const;
+export type VideoEncoder = (typeof VIDEO_ENCODERS)[number];
+
+function encoderArgs(encoder: VideoEncoder, quality: OutputQuality): string[] {
+  const q = String(CRF[quality]);
+  switch (encoder) {
+    case "h264_nvenc":
+      return ["-c:v", encoder, "-preset", "p3", "-rc", "vbr", "-cq", q, "-b:v", "0", "-pix_fmt", "nv12"];
+    case "h264_amf":
+      return ["-c:v", encoder, "-quality", "speed", "-rc", "cqp", "-qp_i", q, "-qp_p", q, "-pix_fmt", "nv12"];
+    case "h264_qsv":
+      return ["-c:v", encoder, "-preset", "veryfast", "-global_quality", q, "-pix_fmt", "nv12"];
+    default:
+      return ["-c:v", "libx264", "-preset", "superfast", "-crf", q, "-pix_fmt", "yuv420p"];
+  }
+}
+
+/** The fastest encoder this machine can actually run, found by encoding one second with each. */
+export async function detectEncoder(): Promise<VideoEncoder> {
+  if (!ffmpegPath) return "libx264";
+  for (const encoder of VIDEO_ENCODERS) {
+    if (encoder === "libx264") break;
+    const { code } = await run(
+      ffmpegPath,
+      ["-v", "error", "-f", "lavfi", "-i", `testsrc2=size=${SHORT_WIDTH}x${SHORT_HEIGHT}:rate=30:duration=1`, ...encoderArgs(encoder, "high"), "-f", "null", "-"],
+      30_000,
+    ).catch(() => ({ code: 1 }));
+    if (code === 0) return encoder;
+  }
+  return "libx264";
 }
 
 /** Cuts one segment out of `input` and writes it to `outPath` as a vertical H.264/AAC MP4. Throws MediaToolError. */
 export async function renderShort(input: MediaInput, render: ShortRender, outPath: string): Promise<void> {
   if (!ffmpegPath) throw new MediaToolError("ffmpeg binary not available on this platform.");
+
+  const { top, bottom } = render.banners ?? {};
+  const topHeight = top?.height ?? 0;
+  const videoHeight = SHORT_HEIGHT - topHeight - (bottom?.height ?? 0);
+  const images: string[] = [];
+  // Black bars baked into the source go first, so the picture itself is what gets framed.
+  const { crop } = render;
+  const cropped = crop ? `[0:v]crop=${crop.width}:${crop.height}:${crop.x}:${crop.y}[picture];` : "";
+  let filter = cropped + frameFilter(crop ? "picture" : "0:v", render.cropMode, videoHeight, "framed");
+  let composed = "framed";
+  if (top || bottom) {
+    // Canvas with the video in its slot, then each banner scaled to fit its strip and laid over it.
+    filter += `;[framed]pad=${SHORT_WIDTH}:${SHORT_HEIGHT}:0:${topHeight}:black[base0]`;
+    composed = "base0";
+    for (const [banner, y] of [[top, 0], [bottom, SHORT_HEIGHT - (bottom?.height ?? 0)]] as const) {
+      if (!banner) continue;
+      images.push("-i", banner.path);
+      const n = images.length / 2;
+      const strip = `${SHORT_WIDTH}:${banner.height}`;
+      filter += `;[${n}:v]scale=${strip}:force_original_aspect_ratio=decrease,pad=${strip}:(ow-iw)/2:(oh-ih)/2:black[banner${n}];[${composed}][banner${n}]overlay=0:${y}[base${n}]`;
+      composed = `base${n}`;
+    }
+  }
+
+  // The label ("Part 3") is centred on the point the user dragged it to, kept clear of the frame's edges.
+  const { label } = render;
+  const text = label?.text.replace(/[^\p{L}\p{N} #.\-–/!?&+]/gu, "").trim();
+  let drawLabel = "";
+  if (label && text) {
+    const edge = LABEL_BOX + 12;
+    const x = `max(${edge},min(w-text_w-${edge},${Math.round(SHORT_WIDTH * label.x)}-text_w/2))`;
+    const y = `max(${edge},min(h-text_h-${edge},${Math.round(SHORT_HEIGHT * label.y)}-text_h/2))`;
+    drawLabel = `drawtext=fontfile='${LABEL_FONT}':text='${text}':fontsize=${LABEL_FONT_SIZE}:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=${LABEL_BOX}:x='${x}':y='${y}',`;
+  }
+  filter += `;[${composed}]${drawLabel}setsar=1[v]`;
+
   const { code, signal, stderr } = await run(
     ffmpegPath,
     [
       "-v", "error", "-y",
       "-ss", render.startSec.toFixed(2), "-t", render.durationSec.toFixed(2), "-i", input.url,
-      "-filter_complex", verticalFilter(render.cropMode), "-map", "[v]", "-map", "0:a:0?",
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", String(CRF[render.quality]), "-pix_fmt", "yuv420p", "-r", "30",
+      ...images,
+      "-filter_complex", filter, "-map", "[v]", "-map", "0:a:0?",
+      ...encoderArgs(render.encoder ?? "libx264", render.quality), "-r", "30",
       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
       "-movflags", "+faststart", "-f", "mp4", outPath,
     ],

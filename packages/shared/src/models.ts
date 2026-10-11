@@ -87,6 +87,8 @@ export const COLLECTIONS = {
   youtubeCredentials: "youtubeCredentials",
   /** Server-only. One-time OAuth `state` nonces (CSRF protection), auto-deleted by TTL. */
   oauthStates: "oauthStates",
+  /** Images the user overlays on the top or bottom of their Shorts. */
+  banners: "banners",
   activityLogs: "activityLogs",
   notifications: "notifications",
 } as const;
@@ -195,6 +197,31 @@ export interface ShortDoc {
   youtubeVideoId: string | null;
   publishedAt: TimestampLike | null;
   errorMessage: string | null;
+  /** What YouTube last reported about the uploaded video. Written by checkYouTubeStatus. */
+  youtubeCheck?: YoutubeCheck | null;
+  /**
+   * Set while a Short is up as Unlisted waiting for its copyright check: the
+   * visibility it switches to once it is confirmed to play. Null otherwise.
+   */
+  pendingPrivacy?: PrivacyStatus | null;
+  /** Set once the video file was removed from Storage after its upload to YouTube. The thumbnail is kept. */
+  fileDeletedAt?: TimestampLike | null;
+}
+
+/**
+ * - `live`: playable, nothing restricting it.
+ * - `processing`: YouTube hasn't finished with it yet.
+ * - `blocked`: up, but hidden in some or all countries (usually a copyright claim).
+ * - `rejected`: YouTube refused it (copyright, duplicate, terms…).
+ * - `removed`: no longer on the channel.
+ */
+export type YoutubeCheckState = "live" | "processing" | "blocked" | "rejected" | "removed";
+
+export interface YoutubeCheck {
+  state: YoutubeCheckState;
+  /** One sentence for the user. */
+  detail: string;
+  checkedAt: TimestampLike;
 }
 
 /** schedules/{shortId} — one schedule per Short, keyed by shortId, so a Short can never be double-scheduled. */
@@ -207,6 +234,8 @@ export interface ScheduleDoc {
   /** IANA zone the user picked, kept for display/editing only. */
   timezone: string;
   privacy: PrivacyStatus;
+  /** Upload as Unlisted and only go public once it is confirmed to play (no copyright block). */
+  safePublish?: boolean;
   status: ScheduleStatus;
   createdAt: TimestampLike;
   updatedAt: TimestampLike;
@@ -267,6 +296,18 @@ export interface OAuthStateDoc {
   createdAt: TimestampLike;
   /** TTL field: Firestore deletes the doc after this time. */
   expiresAt: TimestampLike;
+}
+
+/** banners/{bannerId} — created and deleted by the owner; the image lives in Storage. */
+export interface BannerDoc {
+  userId: string;
+  name: string;
+  position: "top" | "bottom";
+  storagePath: string;
+  /** Pixel size of the image as uploaded. */
+  width: number;
+  height: number;
+  createdAt: TimestampLike;
 }
 
 /** activityLogs/{logId} — written only by the backend. */

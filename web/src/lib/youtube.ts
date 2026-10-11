@@ -21,7 +21,7 @@ export async function disconnectYouTube(connectionId: string) {
 export const CALLBACK_ERRORS: Record<string, string> = {
   denied: "You cancelled the Google permission screen. Nothing was connected.",
   expired: "The connection link expired. Please try connecting again.",
-  scopes: "ShortFlow needs both permissions (upload videos + view your channel). Please tick both and try again.",
+  scopes: "ShortFlow needs every permission on that screen (upload videos, view your channel, manage your videos). Please tick them all and try again.",
   no_channel: "That Google account doesn't have a YouTube channel yet. Create one on YouTube, then connect.",
   failed: "Google didn't complete the connection. Please try again.",
 };

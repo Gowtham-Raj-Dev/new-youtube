@@ -1,13 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { CalendarClock, Clapperboard, Download, ListPlus, Upload } from "lucide-react";
+import { CalendarClock, Clapperboard, Download, ListPlus, ShieldCheck, Trash2, Upload } from "lucide-react";
 import { DEFAULT_SETTINGS, slotRulesFrom, type ShortDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useSchedules, useSettings, useShorts, useVideos, useYoutubeConnections, type WithId } from "@/lib/firebase/hooks";
-import { describeSchedule, previewSlots } from "@/lib/schedule";
-import { canQueue, downloadShorts, matchesShortFilter, queueShorts, type ShortFilter } from "@/lib/shorts";
+import { describeSchedule, previewSlots, scheduleFacts } from "@/lib/schedule";
+import { canQueue, checkYouTubeStatus, deleteShorts, downloadShorts, isBlockedOnYouTube, matchesShortFilter, needsYouTubeCheck, queueShorts, type ShortFilter } from "@/lib/shorts";
 import { friendlyCallableError } from "@/lib/youtube";
 import { formatInZone } from "@/lib/time";
 import { Alert } from "@/components/ui/alert";
@@ -25,6 +25,7 @@ const FILTERS: Array<{ id: ShortFilter; label: string }> = [
   { id: "ready", label: "Ready" },
   { id: "queued", label: "In queue" },
   { id: "published", label: "Published" },
+  { id: "blocked", label: "Copyright blocked" },
   { id: "failed", label: "Failed" },
 ];
 
@@ -48,6 +49,8 @@ export default function GeneratedShortsPage() {
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
   const [channelId, setChannelId] = useState("");
+  /** Upload as Unlisted, and go public only once it is confirmed to play (no copyright block). */
+  const [checkFirst, setCheckFirst] = useState(true);
 
   const rules = slotRulesFrom(settings ?? DEFAULT_SETTINGS);
   const timezone = rules.timezone;
@@ -57,7 +60,7 @@ export default function GeneratedShortsPage() {
   const ordered = useMemo(() => {
     const videoRank = new Map(videos.map((v, i) => [v.id, i]));
     const rank = (s: ShortDoc) => videoRank.get(s.videoId) ?? Number.MAX_SAFE_INTEGER;
-    return [...shorts].sort((a, b) => rank(a) - rank(b) || a.videoId.localeCompare(b.videoId) || a.segmentIndex - b.segmentIndex);
+    return [...shorts].sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
   }, [shorts, videos]);
 
   const counts = useMemo(
@@ -76,12 +79,76 @@ export default function GeneratedShortsPage() {
   }, [ordered, videos, filter]);
 
   const picked = ordered.filter((s) => selected.has(s.id) && canQueue(s)).map((s) => s.id);
-  const allReady = ordered.filter((s) => s.status === "ready").map((s) => s.id);
+  // A video with one blocked Short is copyrighted material: its other parts are flagged and left out of "all".
+  const blockedVideos = useMemo(() => new Set(shorts.filter(isBlockedOnYouTube).map((s) => s.videoId)), [shorts]);
+  const atRisk = (s: ShortDoc) => canQueue(s) && blockedVideos.has(s.videoId);
+  const riskyCount = ordered.filter(atRisk).length;
+  const allReady = ordered.filter((s) => s.status === "ready" && !atRisk(s)).map((s) => s.id);
   const target = picked.length > 0 ? picked : allReady;
   const open = openId ? shorts.find((s) => s.id === openId) : undefined;
   // Download works on the ticked Shorts, or on everything in the current tab.
-  const toDownload = picked.length > 0 ? ordered.filter((s) => picked.includes(s.id)) : ordered.filter((s) => matchesShortFilter(s, filter));
+  // (Uploaded Shorts have no file left to download: it is removed from Storage once it's on YouTube.)
+  const toDownload = (picked.length > 0 ? ordered.filter((s) => picked.includes(s.id)) : ordered.filter((s) => matchesShortFilter(s, filter))).filter((s) => !s.fileDeletedAt);
   const [downloading, setDownloading] = useState(false);
+  const [checking, setChecking] = useState(false);
+
+  // Clear removes the ticked Shorts, or everything in the current tab — from here and from Storage.
+  const ticked = ordered.filter((s) => selected.has(s.id));
+  const toClear = ticked.length > 0 ? ticked : ordered.filter((s) => matchesShortFilter(s, filter));
+  const [clearing, setClearing] = useState<WithId<ShortDoc>[] | null>(null);
+  const [clearBusy, setClearBusy] = useState(false);
+
+  async function clear() {
+    if (!clearing) return;
+    setClearBusy(true);
+    setBanner(null);
+    try {
+      const { deleted, skipped } = await deleteShorts(clearing.map((s) => s.id));
+      setBanner({ tone: "success", message: `${deleted} Short${deleted === 1 ? "" : "s"} deleted.${skipped > 0 ? ` ${skipped} uploading right now ${skipped === 1 ? "was" : "were"} left alone.` : ""}` });
+      setSelected(new Set());
+    } catch (err) {
+      setBanner({ tone: "error", message: friendlyCallableError(err) });
+    }
+    setClearBusy(false);
+    setClearing(null);
+  }
+
+  /** Asks YouTube about each uploaded Short in turn. Results land on the Shorts themselves and show up live. */
+  async function checkUploaded(list: WithId<ShortDoc>[]) {
+    setChecking(true);
+    let blocked = 0;
+    let failed = 0;
+    for (const short of list) {
+      try {
+        const result = await checkYouTubeStatus(short.id);
+        if (result.state === "blocked" || result.state === "rejected" || result.state === "removed") blocked++;
+      } catch {
+        failed++;
+      }
+    }
+    setChecking(false);
+    setBanner(
+      failed === list.length && list.length > 0
+        ? { tone: "error", message: "Couldn't reach YouTube to check. Try again in a moment." }
+        : { tone: blocked > 0 ? "error" : "success", message: blocked > 0 ? `${blocked} of ${list.length} uploaded Shorts ${blocked === 1 ? "is" : "are"} blocked or gone on YouTube. See the Copyright blocked tab.` : `Checked ${list.length} uploaded Shorts — YouTube reports no blocks.` },
+    );
+  }
+
+  // Once the Shorts have loaded, quietly check the uploaded ones that haven't been looked at lately.
+  const autoChecked = useRef(false);
+  useEffect(() => {
+    if (autoChecked.current || loading) return;
+    autoChecked.current = true;
+    const due = shorts.filter((s) => needsYouTubeCheck(s, Date.now())).slice(0, 15);
+    // No spinner or banner for this one: the answers simply appear on the cards.
+    void (async () => {
+      for (const short of due) await checkYouTubeStatus(short.id).catch(() => undefined);
+    })();
+    // Runs once per visit; `shorts` is read at that moment on purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+
+  const uploaded = ordered.filter((s) => s.status === "published" && s.youtubeVideoId);
 
   async function download() {
     setDownloading(true);
@@ -116,11 +183,13 @@ export default function GeneratedShortsPage() {
     setBusy(true);
     setBanner(null);
     try {
-      const result = await queueShorts(ids, connected.length > 1 ? channelId || connected[0].id : undefined, now);
+      const result = await queueShorts(ids, connected.length > 1 ? channelId || connected[0].id : undefined, now, checkFirst);
       setBanner({
         tone: "success",
         message: now
-          ? `${result.queued === 1 ? "1 Short is" : `${result.queued} Shorts are`} on the way to YouTube. Uploads start within 5 minutes — follow them on the Queue page.`
+          ? result.uploaded === result.queued
+            ? `${result.uploaded === 1 ? "1 Short is" : `${result.uploaded} Shorts are`} on YouTube now.${checkFirst ? " Public ones are Unlisted until their copyright check, about 10 minutes from now." : ""}`
+            : `${result.uploaded} of ${result.queued} Shorts are on YouTube. The rest couldn't go up yet and will be retried within 5 minutes — see the Queue page.`
           : result.queued === 1
             ? `Added to the queue. It goes out ${when(result.firstAt)}.`
             : `${result.queued} Shorts added to the queue — the first goes out ${when(result.firstAt)}, the last ${when(result.lastAt)}.`,
@@ -148,13 +217,23 @@ export default function GeneratedShortsPage() {
         {shorts.length > 0 && (
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {connected.length > 1 && (
-              <select value={channelId || connected[0].id} onChange={(e) => setChannelId(e.target.value)} className={cn(inputClasses, "h-10 w-44")} aria-label="Channel to publish to">
-                {connected.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.channelTitle}
-                  </option>
-                ))}
-              </select>
+              <div className="w-48">
+                <select value={channelId || connected[0].id} onChange={(e) => setChannelId(e.target.value)} className={cn(inputClasses, "h-10")} aria-label="Channel to publish to">
+                  {connected.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.channelTitle}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <Button variant="danger" icon={<Trash2 className="size-4" />} disabled={toClear.length === 0 || busy} onClick={() => setClearing(toClear)}>
+              {ticked.length > 0 ? `Clear ${toClear.length}` : `Clear all ${toClear.length}`}
+            </Button>
+            {uploaded.length > 0 && (
+              <Button variant="secondary" icon={<ShieldCheck className="size-4" />} loading={checking} onClick={() => void checkUploaded(uploaded.slice(0, 50))}>
+                Check copyright
+              </Button>
             )}
             <Button variant="secondary" icon={<Download className="size-4" />} loading={downloading} disabled={toDownload.length === 0} onClick={download}>
               {picked.length > 0 ? `Download ${toDownload.length}` : `Download all ${toDownload.length}`}
@@ -181,6 +260,33 @@ export default function GeneratedShortsPage() {
       )}
       {error && <Alert tone="error">We couldn&apos;t load your Shorts. Check your connection and refresh the page.</Alert>}
 
+      {riskyCount > 0 && (
+        <Card className="flex items-start gap-3 border-warning/30 bg-warning/10 px-4 py-3">
+          <ShieldCheck className="mt-0.5 size-4 shrink-0 text-warning" />
+          <p className="text-[13px] leading-relaxed text-muted">
+            <span className="font-medium text-text">
+              {riskyCount} Short{riskyCount === 1 ? "" : "s"} marked “Copyright risk”.
+            </span>{" "}
+            {riskyCount === 1 ? "It comes" : "They come"} from a video whose other part YouTube already blocked, so {riskyCount === 1 ? "it's" : "they're"} left out of “Submit all” and “Upload all”. Tick one yourself if you still want to send it.
+          </p>
+        </Card>
+      )}
+
+      {shorts.length > 0 && (
+        <label className={cn("flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 transition", checkFirst ? "border-accent/40 bg-accent-soft" : "border-line bg-surface/60")}>
+          <input type="checkbox" checked={checkFirst} onChange={(e) => setCheckFirst(e.target.checked)} className="mt-0.5 size-4 accent-[var(--accent)]" />
+          <span className="text-[13px] leading-relaxed">
+            <span className="flex items-center gap-1.5 font-medium">
+              <ShieldCheck className="size-3.5 text-accent" />
+              Check for copyright before going public
+            </span>
+            <span className="text-muted">
+              A Short set to Public uploads as Unlisted first — off your channel page. About 10 minutes later ShortFlow checks whether it plays: if it does, it goes Public; if a copyright claim blocked it, it stays Unlisted and shows under “Copyright blocked” with who claimed it.
+            </span>
+          </span>
+        </label>
+      )}
+
       {!connectionsLoading && connected.length === 0 && shorts.length > 0 && (
         <Card className="flex flex-col gap-3 border-warning/25 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-[13px] text-muted">
@@ -193,8 +299,9 @@ export default function GeneratedShortsPage() {
       )}
 
       {shorts.length > 0 && (
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-surface/60 p-1 sm:w-fit" role="tablist">
+        <div className="space-y-3">
+          {/* Wraps instead of scrolling, and has the row to itself so nothing squeezes it. */}
+          <div className="flex w-fit max-w-full flex-wrap gap-1 rounded-xl border border-line bg-surface/60 p-1" role="tablist">
             {FILTERS.map((f) => (
               <button
                 key={f.id}
@@ -211,15 +318,22 @@ export default function GeneratedShortsPage() {
               </button>
             ))}
           </div>
-          <p className="flex items-center gap-2 text-[12.5px] text-muted">
-            <CalendarClock className="size-3.5 shrink-0" />
-            <span>
-              Queued Shorts go out {describeSchedule(rules)}.{" "}
-              <Link href="/schedule" className="font-medium text-accent hover:underline">
-                Change
-              </Link>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-line bg-surface/60 px-3.5 py-2.5 text-[12.5px]">
+            <span className="flex items-center gap-2 font-medium">
+              <CalendarClock className="size-3.5 shrink-0 text-accent" />
+              Queued Shorts go out
             </span>
-          </p>
+            <span className="flex flex-wrap gap-1.5">
+              {scheduleFacts(rules).map((fact) => (
+                <span key={fact} className="rounded-lg bg-white/[0.06] px-2 py-0.5 tabular-nums text-muted">
+                  {fact}
+                </span>
+              ))}
+            </span>
+            <Link href="/schedule" className="ml-auto font-medium text-accent hover:underline">
+              Change
+            </Link>
+          </div>
         </div>
       )}
 
@@ -248,7 +362,8 @@ export default function GeneratedShortsPage() {
         </Card>
       ) : (
         groups.map((group) => {
-          const queueable = group.items.filter(canQueue).map((s) => s.id);
+          // Every Short can be ticked (for Clear and Download); queue and upload only act on the ones that can still go out.
+          const queueable = group.items.map((s) => s.id);
           const allPicked = queueable.length > 0 && queueable.every((id) => selected.has(id));
           return (
             <section key={group.videoId} className="space-y-3">
@@ -278,7 +393,8 @@ export default function GeneratedShortsPage() {
                     short={short}
                     timezone={timezone}
                     selected={selected.has(short.id)}
-                    onToggle={canQueue(short) ? () => toggle(short.id) : undefined}
+                    copyrightRisk={atRisk(short)}
+                    onToggle={() => toggle(short.id)}
                     onOpen={() => setOpenId(short.id)}
                   />
                 ))}
@@ -289,6 +405,22 @@ export default function GeneratedShortsPage() {
       )}
 
       {open && <ShortEditorDialog key={open.id} short={open} timezone={timezone} onClose={() => setOpenId(null)} onQueue={(id) => submit([id])} />}
+
+      <ConfirmDialog
+        open={clearing !== null}
+        title={clearing?.length === 1 ? "Delete this Short?" : `Delete ${clearing?.length ?? 0} Shorts?`}
+        description={
+          <>
+            {clearing?.length === 1 ? "It is" : "They are"} removed from ShortFlow and {clearing?.length === 1 ? "its file is" : "their files are"} deleted from storage. This can&apos;t be undone.
+            {clearing?.some((s) => s.youtubeVideoId) && " Ones already on YouTube stay on YouTube — delete those in YouTube Studio."}
+            {clearing?.some((s) => s.status === "scheduled") && " Queued ones are taken out of the queue."}
+          </>
+        }
+        confirmLabel={clearing?.length === 1 ? "Delete Short" : "Delete Shorts"}
+        loading={clearBusy}
+        onConfirm={() => void clear()}
+        onCancel={() => setClearing(null)}
+      />
 
       <ConfirmDialog
         open={confirming !== null}

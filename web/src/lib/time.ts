@@ -22,6 +22,17 @@ export function formatInZone(date: Date, timeZone = DEFAULT_TIMEZONE, opts: Intl
   return new Intl.DateTimeFormat("en-IN", { timeZone, dateStyle: "medium", timeStyle: "short", ...opts }).format(date);
 }
 
+/** Every timezone the browser knows, with `current` kept even if it isn't among them. */
+export function timezoneOptions(current: string) {
+  const zones = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [];
+  return zones.includes(current) ? zones : [current, ...zones];
+}
+
+/** "2026-03-09" for the calendar day `date` falls on in `timeZone` — a key for grouping by day. */
+export function dayKey(date: Date, timeZone = DEFAULT_TIMEZONE) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+}
+
 export function greetingFor(timeZone = DEFAULT_TIMEZONE, date = new Date()) {
   const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone, hour: "numeric", hourCycle: "h23" }).format(date));
   if (hour < 5) return "Good evening";

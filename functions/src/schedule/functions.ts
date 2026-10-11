@@ -1,10 +1,14 @@
 import { HttpsError, onCall } from "firebase-functions/https";
 import { FieldValue, Timestamp, getFirestore } from "firebase-admin/firestore";
 import { COLLECTIONS, DEFAULT_SETTINGS, nextSlots, slotRulesFrom, type SettingsDoc, type ShortDoc } from "@shortflow/shared";
+import { TOKEN_ENCRYPTION_KEY, YOUTUBE_CLIENT_SECRET } from "../config";
 import { requireUid } from "../lib/auth";
 import { logActivity } from "../lib/activity";
+import { publishNow } from "../youtube/publish";
 
 const MAX_PER_CALL = 50;
+/** Leaves a minute of the call's 9 for the upload in flight to finish; the sweep takes whatever is left. */
+const UPLOAD_NOW_BUDGET_MS = 8 * 60 * 1000;
 /** Never hand out a slot the publishing sweep may already be past. */
 const LEAD_MS = 2 * 60 * 1000;
 
@@ -27,8 +31,11 @@ async function pickConnection(userId: string, requested: unknown): Promise<strin
  * publishing schedule, in the order given. Slots are worked out here, not in
  * the browser, so two tabs can never book the same one.
  */
-export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string; now?: boolean }>(async (request) => {
-  // "Upload now": skip the schedule and hand everything to the very next publishing sweep.
+export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string; now?: boolean; safe?: boolean }>(
+  // Long timeout, memory and the YouTube secrets are for "Upload now", which uploads inside the call.
+  { secrets: [YOUTUBE_CLIENT_SECRET, TOKEN_ENCRYPTION_KEY], timeoutSeconds: 540, memory: "512MiB" },
+  async (request) => {
+  // "Upload now": skip the schedule and upload straight away.
   const uploadNow = request.data?.now === true;
   const userId = requireUid(request.auth);
   const requested = request.data?.shortIds;
@@ -70,6 +77,7 @@ export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string; 
         publishAt,
         timezone: rules.timezone,
         privacy: snap.get("privacy"),
+        safePublish: request.data?.safe === true,
         status: "scheduled",
         createdAt: stamp,
         updatedAt: stamp,
@@ -84,15 +92,53 @@ export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string; 
   });
 
   const batch = db.batch();
-  logActivity(batch, userId, {
-    type: "SHORT_SCHEDULED",
-    message: `Queued ${slots.length} Short${slots.length === 1 ? "" : "s"} for YouTube`,
-    refType: "schedule",
-    refId: shortIds[0],
-  });
-  await batch.commit();
+  // Uploading now writes its own "published" entries; a "queued" one on top would be noise.
+  if (!uploadNow) {
+    logActivity(batch, userId, {
+      type: "SHORT_SCHEDULED",
+      message: `Queued ${slots.length} Short${slots.length === 1 ? "" : "s"} for YouTube`,
+      refType: "schedule",
+      refId: shortIds[0],
+    });
+    await batch.commit();
+  }
 
-  return { queued: slots.length, firstAt: slots[0], lastAt: slots[slots.length - 1] };
+  // "Upload now" really is now: send them to YouTube inside this call rather than waiting for the sweep.
+  const uploaded = uploadNow ? await publishNow(shortIds, Date.now() + UPLOAD_NOW_BUDGET_MS) : 0;
+  return { queued: slots.length, firstAt: slots[0], lastAt: slots[slots.length - 1], uploaded };
+  },
+);
+
+/**
+ * Re-times everything still waiting in the queue to the user's current
+ * schedule, keeping the order. Called after the schedule is saved, so a new
+ * start time, gap or daily limit applies to Shorts that were queued under the old one.
+ */
+export const rescheduleQueue = onCall(async (request) => {
+  const userId = requireUid(request.auth);
+  const db = getFirestore();
+  const settings = ((await db.collection(COLLECTIONS.settings).doc(userId).get()).data() as SettingsDoc | undefined) ?? DEFAULT_SETTINGS;
+  const rules = slotRulesFrom(settings);
+  if (rules.publishDays.length === 0) throw new HttpsError("failed-precondition", "Pick at least one publishing day first.");
+
+  const moved = await db.runTransaction(async (tx) => {
+    const mine = await tx.get(db.collection(COLLECTIONS.schedules).where("userId", "==", userId).where("status", "in", ["scheduled", "uploading", "quota_exceeded"]).orderBy("publishAt"));
+    const waiting = mine.docs.filter((d) => d.get("status") === "scheduled");
+    const now = Date.now();
+    // Ones mid-upload or parked on a quota error keep their time and still count towards their day.
+    const fixed = mine.docs.filter((d) => d.get("status") !== "scheduled").map((d) => (d.get("publishAt") as Timestamp).toMillis());
+    const slots = nextSlots(rules, waiting.length, now + LEAD_MS, fixed);
+    if (slots.length < waiting.length) throw new HttpsError("failed-precondition", "Your schedule has no free slots. Check the publishing days.");
+
+    waiting.forEach((doc, i) => {
+      const publishAt = Timestamp.fromMillis(slots[i]);
+      tx.update(doc.ref, { publishAt, timezone: rules.timezone, updatedAt: FieldValue.serverTimestamp() });
+      tx.update(db.collection(COLLECTIONS.shorts).doc(doc.id), { publishAt });
+    });
+    return slots;
+  });
+
+  return { moved: moved.length, firstAt: moved[0] ?? null, lastAt: moved[moved.length - 1] ?? null };
 });
 
 /** "Remove from queue": the Short goes back to ready. Not possible mid-upload or once published. */

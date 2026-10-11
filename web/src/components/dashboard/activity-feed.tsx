@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, CalendarClock, CircleCheck, CircleX, Clapperboard, Film, LoaderCircle, Unplug, type LucideIcon } from "lucide-react";
+import { Activity, CalendarClock, CircleCheck, CircleX, Clapperboard, Film, LoaderCircle, Trash2, Unplug, type LucideIcon } from "lucide-react";
 import type { ActivityType } from "@shortflow/shared";
 import { useRecentActivity } from "@/lib/firebase/hooks";
 import { timeAgo, toDate } from "@/lib/time";
@@ -11,6 +11,8 @@ import { cn } from "@/lib/cn";
 
 const ICONS: Partial<Record<ActivityType, { icon: LucideIcon | "youtube"; tint: string }>> = {
   VIDEO_UPLOADED: { icon: Film, tint: "text-text" },
+  VIDEO_UPLOAD_FAILED: { icon: CircleX, tint: "text-danger" },
+  VIDEO_DELETED: { icon: Trash2, tint: "text-muted" },
   VIDEO_PROCESSING_STARTED: { icon: LoaderCircle, tint: "text-warning" },
   VIDEO_PROCESSING_COMPLETED: { icon: CircleCheck, tint: "text-success" },
   VIDEO_PROCESSING_FAILED: { icon: CircleX, tint: "text-danger" },
@@ -22,6 +24,17 @@ const ICONS: Partial<Record<ActivityType, { icon: LucideIcon | "youtube"; tint: 
   YOUTUBE_UPLOAD_COMPLETED: { icon: CircleCheck, tint: "text-success" },
   YOUTUBE_UPLOAD_FAILED: { icon: CircleX, tint: "text-danger" },
 };
+
+/** The round icon for one kind of activity. */
+export function ActivityIcon({ type }: { type: ActivityType }) {
+  const meta = ICONS[type] ?? { icon: Activity, tint: "text-muted" };
+  const Icon = meta.icon;
+  return (
+    <span className="relative z-10 grid size-8 shrink-0 place-items-center rounded-full border border-line-strong bg-surface-2">
+      {Icon === "youtube" ? <YouTubeIcon className="size-3.5" /> : <Icon className={cn("size-3.5", meta.tint)} />}
+    </span>
+  );
+}
 
 export function ActivityFeed({ uid }: { uid: string }) {
   const { data, loading } = useRecentActivity(uid, 8);
@@ -49,21 +62,15 @@ export function ActivityFeed({ uid }: { uid: string }) {
   return (
     <ol className="relative p-5">
       <span aria-hidden className="absolute bottom-8 left-[35px] top-8 w-px bg-line" />
-      {data.map((item) => {
-        const meta = ICONS[item.type] ?? { icon: Activity, tint: "text-muted" };
-        const Icon = meta.icon;
-        return (
-          <li key={item.id} className="relative flex gap-3 pb-5 last:pb-0">
-            <span className="relative z-10 grid size-8 shrink-0 place-items-center rounded-full border border-line-strong bg-surface-2">
-              {Icon === "youtube" ? <YouTubeIcon className="size-3.5" /> : <Icon className={cn("size-3.5", meta.tint)} />}
-            </span>
-            <div className="min-w-0 pt-1">
-              <p className="text-[13px] leading-snug">{item.message}</p>
-              <p className="mt-0.5 text-[11.5px] text-faint">{timeAgo(toDate(item.createdAt))}</p>
-            </div>
-          </li>
-        );
-      })}
+      {data.map((item) => (
+        <li key={item.id} className="relative flex gap-3 pb-5 last:pb-0">
+          <ActivityIcon type={item.type} />
+          <div className="min-w-0 pt-1">
+            <p className="text-[13px] leading-snug">{item.message}</p>
+            <p className="mt-0.5 text-[11.5px] text-faint">{timeAgo(toDate(item.createdAt))}</p>
+          </div>
+        </li>
+      ))}
     </ol>
   );
 }

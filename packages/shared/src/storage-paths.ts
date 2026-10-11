@@ -5,6 +5,7 @@
  * users/{uid}/videos/thumbnails/{videoId}.jpg
  * users/{uid}/shorts/{shortId}/video.mp4
  * users/{uid}/shorts/{shortId}/thumbnail.jpg
+ * users/{uid}/banners/{bannerId}.{png|jpg|webp}
  */
 
 export const ACCEPTED_VIDEO_TYPES = {
@@ -40,4 +41,5 @@ export const storagePaths = {
   videoThumbnail: (uid: string, videoId: string) => `users/${uid}/videos/thumbnails/${videoId}.jpg`,
   shortVideo: (uid: string, shortId: string) => `users/${uid}/shorts/${shortId}/video.mp4`,
   shortThumbnail: (uid: string, shortId: string) => `users/${uid}/shorts/${shortId}/thumbnail.jpg`,
+  banner: (uid: string, bannerId: string, extension: string) => `users/${uid}/banners/${bannerId}.${extension}`,
 } as const;

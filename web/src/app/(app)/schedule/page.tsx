@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, type FormEvent } from "react";
-import { CalendarClock, Layers, TriangleAlert } from "lucide-react";
+import { CalendarClock, Layers, RotateCcw, TriangleAlert } from "lucide-react";
 import {
   DEFAULT_SETTINGS,
   SCHEDULE_INTERVALS_MINUTES,
@@ -15,8 +15,8 @@ import {
 } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useSchedules, useSettings, type WithId } from "@/lib/firebase/hooks";
-import { WEEKDAY_LABELS, describeSchedule, saveSettings, takenSlots, type EditableSettings } from "@/lib/schedule";
-import { formatInZone } from "@/lib/time";
+import { WEEKDAY_LABELS, describeSchedule, rescheduleQueue, saveSettings, type EditableSettings } from "@/lib/schedule";
+import { formatInZone, timezoneOptions } from "@/lib/time";
 import { Alert } from "@/components/ui/alert";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -33,11 +33,6 @@ const INTERVAL_LABELS: Record<ScheduleIntervalMinutes, string> = {
   720: "12 hours",
   1440: "24 hours (one a day)",
 };
-
-function timezoneOptions(current: string) {
-  const zones = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [];
-  return zones.includes(current) ? zones : [current, ...zones];
-}
 
 function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: EditableSettings; schedules: WithId<ScheduleDoc>[] }) {
   const [timezone, setTimezone] = useState(settings.publishing.timezone);
@@ -62,25 +57,48 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
     WEEKDAYS.some((d) => publishDays.includes(d) !== settings.automation.publishDays.includes(d));
 
   const daily = valid ? dailySlotMinutes(rules) : [];
-  const upcoming = valid ? nextSlots(rules, 6, now, takenSlots(schedules, now)) : [];
   const waiting = schedules.filter((s) => s.status === "scheduled" || s.status === "quota_exceeded").length;
+  // The times videos go out under the schedule on screen, counted from now: first the ones already
+  // queued (saving moves them onto these times), then the next few that get added.
+  const plan = valid ? nextSlots(rules, Math.max(waiting + 2, 6), now) : [];
 
   function toggleDay(day: Weekday) {
     setPublishDays((days) => (days.includes(day) ? days.filter((d) => d !== day) : WEEKDAYS.filter((d) => d === day || days.includes(d))));
   }
 
+  function reset() {
+    setTimezone(settings.publishing.timezone);
+    setFirstTime(settings.publishing.defaultUploadTime);
+    setIntervalMinutes(settings.automation.intervalMinutes);
+    setMaxPerDay(settings.automation.maxPerDay);
+    setPublishDays(settings.automation.publishDays);
+    setBanner(null);
+  }
+
   async function save(e: FormEvent) {
     e.preventDefault();
-    if (!valid || !dirty) return;
+    // With Shorts waiting, saving is allowed even unchanged: it re-times the queue to this schedule.
+    if (!valid || (!dirty && waiting === 0)) return;
     setBusy(true);
     setBanner(null);
     try {
-      await saveSettings(uid, {
-        ...settings,
-        publishing: { ...settings.publishing, timezone, defaultUploadTime: firstTime },
-        automation: { ...settings.automation, intervalMinutes, publishDays, maxPerDay },
+      if (dirty) {
+        await saveSettings(uid, {
+          ...settings,
+          publishing: { ...settings.publishing, timezone, defaultUploadTime: firstTime },
+          automation: { ...settings.automation, intervalMinutes, publishDays, maxPerDay },
+        });
+      }
+      // The Shorts already waiting move to the new times too, in the same order.
+      const { moved, firstAt, lastAt } = await rescheduleQueue();
+      const when = (ms: number) => formatInZone(new Date(ms), timezone, { dateStyle: undefined, timeStyle: undefined, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+      setBanner({
+        tone: "success",
+        message:
+          moved > 0 && firstAt && lastAt
+            ? `Schedule saved. The ${moved} Short${moved === 1 ? "" : "s"} in the queue ${moved === 1 ? "was" : "were"} moved to it: first ${when(firstAt)}, last ${when(lastAt)}.`
+            : "Schedule saved. Shorts you queue from now on use these times.",
       });
-      setBanner({ tone: "success", message: "Schedule saved. Shorts you queue from now on use these times; ones already in the queue keep theirs." });
     } catch {
       setBanner({ tone: "error", message: "Couldn't save your schedule. Check your connection and try again." });
     }
@@ -159,9 +177,13 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
             {publishDays.length === 0 && <p className="mt-1.5 text-[12px] text-danger">Pick at least one day.</p>}
           </div>
 
-          <div className="flex justify-end border-t border-line pt-5">
-            <Button type="submit" loading={busy} disabled={!valid || !dirty}>
-              Save schedule
+          <div className="flex justify-end gap-2 border-t border-line pt-5">
+            {/* Throws away unsaved changes and goes back to the schedule as last saved. */}
+            <Button type="button" variant="ghost" icon={<RotateCcw className="size-4" />} disabled={!dirty || busy} onClick={reset}>
+              Reset
+            </Button>
+            <Button type="submit" loading={busy} disabled={!valid || (!dirty && waiting === 0)}>
+              {dirty || waiting === 0 ? "Save schedule" : "Apply to queue"}
             </Button>
           </div>
         </form>
@@ -187,16 +209,22 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
                 <div>
                   <p className="mb-2 flex items-center gap-2 font-medium">
                     <CalendarClock className="size-3.5 text-accent" />
-                    Next free slots
+                    When each video goes out
                   </p>
-                  <ol className="space-y-1.5 text-muted">
-                    {upcoming.map((ms) => (
-                      <li key={ms} className="flex justify-between gap-3 tabular-nums">
-                        <span>{formatInZone(new Date(ms), timezone, { dateStyle: undefined, timeStyle: undefined, weekday: "short", day: "numeric", month: "short" })}</span>
-                        <span className="text-text">{formatInZone(new Date(ms), timezone, { dateStyle: undefined, timeStyle: "short" })}</span>
+                  <ol className="max-h-72 space-y-1 overflow-y-auto pr-1 [scrollbar-width:thin]">
+                    {plan.map((ms, i) => (
+                      <li key={ms} className="flex items-center gap-3 rounded-lg px-2 py-1.5 tabular-nums odd:bg-white/[0.03]">
+                        <span className={cn("w-16 shrink-0 font-medium", i < waiting ? "text-text" : "text-faint")}>Video {i + 1}</span>
+                        <span className="flex-1 text-muted">{formatInZone(new Date(ms), timezone, { dateStyle: undefined, timeStyle: undefined, weekday: "short", day: "numeric", month: "short" })}</span>
+                        <span className={i < waiting ? "text-text" : "text-muted"}>{formatInZone(new Date(ms), timezone, { dateStyle: undefined, timeStyle: "short" })}</span>
                       </li>
                     ))}
                   </ol>
+                  <p className="mt-2 text-[12px] leading-relaxed text-faint">
+                    {waiting > 0
+                      ? `Videos 1–${waiting} are the ones in your queue now${dirty ? " — save to move them to these times" : ""}. The rest are the next ones you add.`
+                      : "Nothing is queued yet — this is where the next videos you add will go."}
+                  </p>
                 </div>
               </>
             ) : (

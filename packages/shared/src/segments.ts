@@ -27,9 +27,18 @@ export function planSegments(durationSec: number, shortDuration: number): Segmen
   return segments;
 }
 
-/** `{videoId}_001`, `_002`, … — one id per part, so the same part is never made twice. */
-export function shortIdFor(videoId: string, segmentIndex: number): string {
-  return `${videoId}_${String(segmentIndex + 1).padStart(3, "0")}`;
+/**
+ * `{videoId}_{run}_001`, `_002`, … `run` names one press of Generate, so cutting
+ * a video again adds a new set instead of colliding with the Shorts already made.
+ * Must match the id pattern in firestore.rules.
+ */
+export function shortIdFor(videoId: string, run: string, segmentIndex: number): string {
+  return `${videoId}_${run}_${String(segmentIndex + 1).padStart(3, "0")}`;
+}
+
+/** A short id for one Generate run; later runs sort after earlier ones. */
+export function newRunId(now = Date.now()): string {
+  return Math.floor(now / 1000).toString(36);
 }
 
 /** Fills `{videoTitle}`, `{part}` (01, 02, …) and `{total}`, within YouTube's 100-character title limit. */

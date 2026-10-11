@@ -7,6 +7,7 @@ import {
   Layers,
   LayoutDashboard,
   LifeBuoy,
+  PanelTop,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -19,6 +20,7 @@ export interface NavItem {
 
 export const MAIN_NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/banners", label: "Banners", icon: PanelTop },
   { href: "/videos", label: "Videos", icon: Film },
   { href: "/shorts", label: "Shorts", icon: Clapperboard },
   { href: "/schedule", label: "Schedule", icon: CalendarClock },

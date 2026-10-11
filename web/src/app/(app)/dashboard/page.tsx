@@ -1,13 +1,13 @@
 "use client";
 
 import { ArrowRight, CalendarClock, Film, Upload } from "lucide-react";
-import { DEFAULT_TIMEZONE } from "@shortflow/shared";
+import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useUserDoc, useVideos } from "@/lib/firebase/hooks";
+import { useSchedules, useSettings, useShorts, useUserDoc, useVideos } from "@/lib/firebase/hooks";
 import { useUploads } from "@/lib/uploads/upload-provider";
 import { VideoCard, VideoCardSkeleton } from "@/components/video/video-card";
 import { useDashboardCounts } from "@/lib/firebase/counts";
-import { greetingFor } from "@/lib/time";
+import { formatInZone, greetingFor, toDate } from "@/lib/time";
 import { Card, CardHeader } from "@/components/ui/card";
 import { ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -16,6 +16,7 @@ import { YouTubeIcon } from "@/components/ui/brand-icons";
 import { DashboardHero } from "@/components/dashboard/hero";
 import { StatCards } from "@/components/dashboard/stat-cards";
 import { ActivityFeed } from "@/components/dashboard/activity-feed";
+import { ShortStatusBadge, ShortThumbnail } from "@/components/short/short-card";
 
 function ConnectYouTubeBanner() {
   return (
@@ -80,6 +81,66 @@ function RecentVideos({ uid, timezone }: { uid: string; timezone: string }) {
   );
 }
 
+function UpcomingSchedule({ uid }: { uid: string }) {
+  const { data: schedules, loading } = useSchedules(uid);
+  const { data: shorts } = useShorts(uid);
+  const { data: settings } = useSettings(uid);
+  const timezone = (settings ?? DEFAULT_SETTINGS).publishing.timezone;
+  const waiting = schedules.filter((s) => s.status === "scheduled" || s.status === "uploading" || s.status === "quota_exceeded");
+  const next = waiting.slice(0, 4);
+
+  return (
+    <Card>
+      <CardHeader
+        title="Upcoming schedule"
+        description="The next Shorts going live on YouTube."
+        action={
+          waiting.length > 0 && (
+            <ButtonLink href="/queue" variant="ghost" size="sm">
+              View all {waiting.length}
+              <ArrowRight className="size-3.5" />
+            </ButtonLink>
+          )
+        }
+      />
+      {loading ? (
+        <div className="space-y-3 p-5">
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+        </div>
+      ) : next.length > 0 ? (
+        <ul className="mt-3 divide-y divide-line border-t border-line">
+          {next.map((schedule) => {
+            const short = shorts.find((s) => s.id === schedule.id);
+            const at = toDate(schedule.publishAt);
+            return (
+              <li key={schedule.id} className="flex items-center gap-3.5 px-5 py-3">
+                <div className="aspect-[9/16] w-9 shrink-0 overflow-hidden rounded-md border border-line bg-surface-2">{short && <ShortThumbnail short={short} />}</div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13.5px] font-medium">{short?.title ?? "Short"}</p>
+                  <p className="mt-0.5 truncate text-[12.5px] text-muted">{at && formatInZone(at, timezone)}</p>
+                </div>
+                <ShortStatusBadge status={schedule.status} />
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <EmptyState
+          icon={<CalendarClock className="size-5" />}
+          title="No scheduled Shorts"
+          description="Your publishing calendar is empty."
+          action={
+            <ButtonLink href="/shorts" variant="secondary">
+              Queue a Short
+            </ButtonLink>
+          }
+        />
+      )}
+    </Card>
+  );
+}
+
 export default function DashboardPage() {
   const { user } = useAuth();
   const { data: profile, loading: profileLoading } = useUserDoc(user?.uid);
@@ -108,19 +169,7 @@ export default function DashboardPage() {
       <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
         <div className="space-y-6">
           {user && <RecentVideos uid={user.uid} timezone={timezone} />}
-          <Card>
-            <CardHeader title="Upcoming schedule" description="The next Shorts going live on YouTube." />
-            <EmptyState
-              icon={<CalendarClock className="size-5" />}
-              title="No scheduled Shorts"
-              description="Your publishing calendar is empty."
-              action={
-                <ButtonLink href="/schedule" variant="secondary">
-                  Schedule a Short
-                </ButtonLink>
-              }
-            />
-          </Card>
+          {user && <UpcomingSchedule uid={user.uid} />}
         </div>
         <Card className="h-fit">
           <CardHeader title="Recent activity" description="Everything ShortFlow does, as it happens." />

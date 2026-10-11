@@ -1,7 +1,7 @@
 import { doc, updateDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { getDownloadURL, ref as storageRef } from "firebase/storage";
-import { COLLECTIONS, type PrivacyStatus, type ShortDoc, type ShortStatus } from "@shortflow/shared";
+import { COLLECTIONS, type PrivacyStatus, type ShortDoc, type ShortStatus, type YoutubeCheckState } from "@shortflow/shared";
 import { firebase } from "./firebase/client";
 
 /** YouTube's limits; firestore.rules enforces the first two and the tag count. */
@@ -51,17 +51,38 @@ export interface QueueResult {
   queued: number;
   firstAt: number;
   lastAt: number;
+  /** "Upload now" only: how many are already on YouTube. The rest follow within minutes. */
+  uploaded: number;
 }
 
 /** "Submit to queue": the server gives each Short the next free slot of the publishing schedule, in this order. */
-export async function queueShorts(shortIds: string[], connectionId?: string, now = false): Promise<QueueResult> {
-  const call = httpsCallable<{ shortIds: string[]; connectionId?: string; now?: boolean }, QueueResult>(firebase().functions, "queueShorts");
+export async function queueShorts(shortIds: string[], connectionId?: string, now = false, safe = false): Promise<QueueResult> {
+  // "Upload now" uploads inside the call, so it can run for minutes — well past the default 70-second wait.
+  const call = httpsCallable<{ shortIds: string[]; connectionId?: string; now?: boolean; safe?: boolean }, QueueResult>(firebase().functions, "queueShorts", { timeout: 540_000 });
   let result: QueueResult | null = null;
   for (let i = 0; i < shortIds.length; i += CALL_LIMIT) {
-    const { data } = await call({ shortIds: shortIds.slice(i, i + CALL_LIMIT), connectionId, now });
-    result = result ? { queued: result.queued + data.queued, firstAt: result.firstAt, lastAt: data.lastAt } : data;
+    const { data } = await call({ shortIds: shortIds.slice(i, i + CALL_LIMIT), connectionId, now, safe });
+    result = result ? { queued: result.queued + data.queued, firstAt: result.firstAt, lastAt: data.lastAt, uploaded: result.uploaded + data.uploaded } : data;
   }
   return result!;
+}
+
+/** Asks YouTube whether an uploaded Short is live, blocked or rejected. The answer is also saved on the Short. */
+export async function checkYouTubeStatus(shortId: string): Promise<{ state: YoutubeCheckState; detail: string }> {
+  const { data } = await httpsCallable<{ shortId: string }, { state: YoutubeCheckState; detail: string }>(firebase().functions, "checkYouTubeStatus")({ shortId });
+  return data;
+}
+
+/** Deletes Shorts from ShortFlow and their files from Storage. Ones already on YouTube stay on YouTube. */
+export async function deleteShorts(shortIds: string[]): Promise<{ deleted: number; skipped: number }> {
+  const call = httpsCallable<{ shortIds: string[] }, { deleted: number; skipped: number }>(firebase().functions, "deleteShorts", { timeout: 300_000 });
+  const total = { deleted: 0, skipped: 0 };
+  for (let i = 0; i < shortIds.length; i += CALL_LIMIT) {
+    const { data } = await call({ shortIds: shortIds.slice(i, i + CALL_LIMIT) });
+    total.deleted += data.deleted;
+    total.skipped += data.skipped;
+  }
+  return total;
 }
 
 export async function unqueueShort(shortId: string) {
@@ -85,17 +106,35 @@ export async function downloadShorts(shorts: Array<Pick<ShortDoc, "storagePath">
   }
 }
 
-export type ShortFilter = "all" | "ready" | "queued" | "published" | "failed";
+export type ShortFilter = "all" | "ready" | "queued" | "published" | "blocked" | "failed";
 
-export const SHORT_FILTER_STATUSES: Record<Exclude<ShortFilter, "all">, ShortStatus[]> = {
+export const SHORT_FILTER_STATUSES: Record<Exclude<ShortFilter, "all" | "blocked">, ShortStatus[]> = {
   ready: ["ready"],
   queued: ["scheduled", "uploading", "quota_exceeded"],
   published: ["published"],
   failed: ["failed"],
 };
 
-export function matchesShortFilter(short: Pick<ShortDoc, "status">, filter: ShortFilter) {
-  return filter === "all" || SHORT_FILTER_STATUSES[filter].includes(short.status);
+/** Uploaded, but YouTube is hiding it: a copyright block, a rejection, or a takedown. */
+export function isBlockedOnYouTube(short: Pick<ShortDoc, "youtubeCheck">) {
+  const state = short.youtubeCheck?.state;
+  return state === "blocked" || state === "rejected" || state === "removed";
+}
+
+export function matchesShortFilter(short: Pick<ShortDoc, "status" | "youtubeCheck">, filter: ShortFilter) {
+  if (filter === "all") return true;
+  if (filter === "blocked") return isBlockedOnYouTube(short);
+  return SHORT_FILTER_STATUSES[filter].includes(short.status);
+}
+
+const RECHECK_AFTER_MS = 6 * 60 * 60 * 1000;
+
+/** Published Shorts whose YouTube status has never been checked, is still settling, or is stale. */
+export function needsYouTubeCheck(short: Pick<ShortDoc, "status" | "youtubeVideoId" | "youtubeCheck">, now: number) {
+  if (short.status !== "published" || !short.youtubeVideoId) return false;
+  const check = short.youtubeCheck;
+  if (!check || check.state === "processing") return true;
+  return now - (check.checkedAt?.toMillis?.() ?? 0) > RECHECK_AFTER_MS;
 }
 
 /** Shorts the user can still put in the queue. */

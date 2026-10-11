@@ -1,4 +1,5 @@
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
 import { COLLECTIONS, WEEKDAYS, dailySlotMinutes, nextSlots, type ScheduleDoc, type SettingsDoc, type SlotRules, type Weekday } from "@shortflow/shared";
 import { firebase } from "./firebase/client";
 import { toDate } from "./time";
@@ -16,6 +17,12 @@ export async function saveSettings(uid: string, settings: EditableSettings) {
     notifications: settings.notifications,
     updatedAt: serverTimestamp(),
   });
+}
+
+/** Moves every Short still waiting in the queue onto the saved schedule, keeping their order. */
+export async function rescheduleQueue(): Promise<{ moved: number; firstAt: number | null; lastAt: number | null }> {
+  const { data } = await httpsCallable<void, { moved: number; firstAt: number | null; lastAt: number | null }>(firebase().functions, "rescheduleQueue")();
+  return data;
 }
 
 export const WEEKDAY_LABELS: Record<Weekday, string> = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
@@ -40,6 +47,17 @@ export function describeDays(days: readonly Weekday[]) {
 export function describeSchedule(rules: SlotRules) {
   const times = dailySlotMinutes(rules).map(formatSlotTime);
   return `${describeDays(rules.publishDays)} at ${listFormat.format(times)}`;
+}
+
+/** The schedule as a few short facts — "Every day", "4 a day", "8:00 pm – 11:00 pm", "1 hour apart" — that stay short however many slots there are. */
+export function scheduleFacts(rules: SlotRules): string[] {
+  const slots = dailySlotMinutes(rules);
+  const days = describeDays(rules.publishDays).replace(/^on /, "");
+  const facts = [days.charAt(0).toUpperCase() + days.slice(1), `${slots.length} a day`];
+  if (slots.length === 0) return facts;
+  if (slots.length === 1) return [...facts, `at ${formatSlotTime(slots[0])}`];
+  const gap = rules.intervalMinutes;
+  return [...facts, `${formatSlotTime(slots[0])} – ${formatSlotTime(slots[slots.length - 1])}`, gap < 60 ? `${gap} minutes apart` : `${gap / 60} hour${gap === 60 ? "" : "s"} apart`];
 }
 
 /** The slots the server would hand out right now for `count` more Shorts. A preview only — the server decides. */

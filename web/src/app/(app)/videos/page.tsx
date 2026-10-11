@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Film, Sparkles } from "lucide-react";
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE, type VideoDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useSettings, useShorts, useUserDoc, useVideos, type WithId } from "@/lib/firebase/hooks";
+import { useBanners, useSettings, useShorts, useUserDoc, useVideos, type WithId } from "@/lib/firebase/hooks";
 import { useUploads, type RejectedFile } from "@/lib/uploads/upload-provider";
 import { matchesFilter, type VideoFilter } from "@/lib/videos";
 import { Alert } from "@/components/ui/alert";
@@ -13,7 +13,8 @@ import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Dropzone } from "@/components/video/dropzone";
 import { VideoCard, VideoCardSkeleton } from "@/components/video/video-card";
-import { DeleteVideoDialog, GenerateShortsDialog, RenameVideoDialog } from "@/components/video/video-dialogs";
+import { DeleteVideoDialog, RenameVideoDialog } from "@/components/video/video-dialogs";
+import { VideoStudioDialog } from "@/components/video/video-studio";
 import { cn } from "@/lib/cn";
 
 const FILTERS: Array<{ id: VideoFilter; label: string }> = [
@@ -29,6 +30,7 @@ export default function VideosPage() {
   const { data: storedVideos, loading, error } = useVideos(user?.uid);
   const { data: shorts } = useShorts(user?.uid);
   const { data: settings } = useSettings(user?.uid);
+  const { data: banners } = useBanners(user?.uid);
   const [made, setMade] = useState<number | null>(null);
 
   // Shorts are registered by the browser, so the count comes from the Shorts themselves.
@@ -101,7 +103,7 @@ export default function VideosPage() {
         <Card className="flex items-center gap-3 border-accent/20 bg-[linear-gradient(100deg,var(--accent-soft),transparent_60%)] px-4 py-3">
           <Sparkles className="size-4 shrink-0 text-accent" />
           <p className="text-[13px] text-muted">
-            <span className="font-medium text-text">Press Generate Shorts on a video</span> and choose how long each Short should be. Finished Shorts appear on the{" "}
+            <span className="font-medium text-text">Click a video</span> to preview it as a Short, pick its banners and length, and generate. Finished Shorts appear on the{" "}
             <Link href="/shorts" className="font-medium text-accent hover:underline">
               Shorts page
             </Link>
@@ -111,7 +113,7 @@ export default function VideosPage() {
       )}
 
       {videos.length > 0 && (
-        <div className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-surface/60 p-1 sm:w-fit" role="tablist">
+        <div className="flex w-fit max-w-full flex-wrap gap-1 rounded-xl border border-line bg-surface/60 p-1" role="tablist">
           {FILTERS.map((f) => (
             <button
               key={f.id}
@@ -162,13 +164,22 @@ export default function VideosPage() {
 
       {deleting && <DeleteVideoDialog video={deleting} onClose={() => setDeleting(null)} />}
       {generating && (
-        <GenerateShortsDialog
+        <VideoStudioDialog
           video={generating}
           settings={settings ?? DEFAULT_SETTINGS}
+          banners={banners}
           onClose={() => setGenerating(null)}
           onDone={(count) => {
             setGenerating(null);
             setMade(count);
+          }}
+          onRename={() => {
+            setRenaming(generating);
+            setGenerating(null);
+          }}
+          onDelete={() => {
+            setDeleting(generating);
+            setGenerating(null);
           }}
         />
       )}

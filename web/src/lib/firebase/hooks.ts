@@ -15,6 +15,7 @@ import {
 import {
   COLLECTIONS,
   type ActivityLogDoc,
+  type BannerDoc,
   type NotificationDoc,
   type ScheduleDoc,
   type SettingsDoc,
@@ -101,6 +102,13 @@ export function useSchedules(uid: string | undefined, count = 300) {
       limit(count),
     ),
   );
+}
+
+/** The user's banner images, newest first (sorted here to avoid needing a composite index). */
+export function useBanners(uid: string | undefined) {
+  const state = useLiveQuery<BannerDoc>(uid ? `banners:${uid}` : null, () => query(collection(firebase().db, COLLECTIONS.banners), where("userId", "==", uid)));
+  const data = [...state.data].sort((a, b) => (b.createdAt?.toMillis?.() ?? Infinity) - (a.createdAt?.toMillis?.() ?? Infinity));
+  return { ...state, data };
 }
 
 export function useYoutubeConnections(uid: string | undefined) {

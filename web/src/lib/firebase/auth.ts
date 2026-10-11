@@ -7,7 +7,7 @@ import {
   updateProfile,
   type User,
 } from "firebase/auth";
-import { doc, runTransaction, serverTimestamp } from "firebase/firestore";
+import { doc, runTransaction, serverTimestamp, updateDoc } from "firebase/firestore";
 import { FirebaseError } from "firebase/app";
 import { COLLECTIONS, DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from "@shortflow/shared";
 import { firebase } from "./client";
@@ -70,6 +70,12 @@ export async function signUpWithEmail(email: string, password: string, displayNa
   await updateProfile(user, { displayName });
   await syncUserProfile(user, { touchLogin: true });
   return user;
+}
+
+/** Saves the name and timezone picked in Settings. The Auth profile gets the name too, because sign-in copies it from there. */
+export async function saveProfile(user: User, displayName: string, timezone: string) {
+  if (displayName !== (user.displayName ?? "")) await updateProfile(user, { displayName });
+  await updateDoc(doc(firebase().db, COLLECTIONS.users, user.uid), { displayName, timezone });
 }
 
 export function signOut() {

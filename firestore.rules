@@ -194,7 +194,8 @@ service cloud.firestore {
         && incoming().videoId is string
         && get(/databases/$(database)/documents/videos/$(incoming().videoId)).data.userId == request.auth.uid
         && incoming().segmentIndex is int && incoming().segmentIndex >= 0 && incoming().segmentIndex < 999
-        && shortId.matches('^' + incoming().videoId + '_[0-9]{3}$')
+        // {videoId}_{run}_{part} — see shortIdFor(). The run part is optional for Shorts made before it existed.
+        && shortId.matches('^' + incoming().videoId + '_([a-z0-9]{1,10}_)?[0-9]{3}$')
         && incoming().startSec is number && incoming().startSec >= 0
         && incoming().endSec is number && incoming().endSec > incoming().startSec
         // 180 s — keep in sync with MAX_SHORT_SECONDS.
@@ -217,6 +218,27 @@ service cloud.firestore {
         && isYoutubeMetadata(incoming());
 
       allow delete: if false;
+    }
+
+    // ─── banners/{bannerId} ────────────────────────────────────────────────────
+    // Images the owner lays over the top or bottom of their Shorts.
+
+    match /banners/{bannerId} {
+      allow read: if ownsExisting();
+
+      allow create: if signedIn()
+        && incoming().keys().hasOnly(['userId', 'name', 'position', 'storagePath', 'width', 'height', 'createdAt'])
+        && incoming().keys().hasAll(['userId', 'name', 'position', 'storagePath', 'width', 'height', 'createdAt'])
+        && incoming().userId == request.auth.uid
+        && isText(incoming().name, 1, 80)
+        && incoming().position in ['top', 'bottom']
+        && incoming().storagePath.matches('^users/' + request.auth.uid + '/banners/' + bannerId + '[.](png|jpg|webp)$')
+        && incoming().width is int && incoming().width > 0
+        && incoming().height is int && incoming().height > 0
+        && incoming().createdAt == request.time;
+
+      allow update: if false;
+      allow delete: if ownsExisting();
     }
 
     // ─── Backend-owned, owner-readable ─────────────────────────────────────────

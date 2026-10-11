@@ -23,9 +23,9 @@ export interface VideoCardActions {
   onGenerate?: () => void;
 }
 
-/** A verified source that hasn't been cut yet. To cut it again, its Shorts are deleted first. */
+/** A verified source whose file is still there. It can be cut as many times as the user likes. */
 function canGenerate(video: VideoDoc) {
-  return !video.sourceDeletedAt && (video.status === "uploaded" || video.status === "completed") && video.shortsCount === 0;
+  return !video.sourceDeletedAt && (video.status === "uploaded" || video.status === "completed");
 }
 
 type Phase = "uploading" | "verifying" | "upload-error" | "interrupted" | VideoDoc["status"];
@@ -137,7 +137,8 @@ export function VideoCard({
     <Card className="group overflow-hidden transition duration-300 hover:-translate-y-0.5 hover:border-line-strong hover:shadow-[0_20px_40px_-20px_rgb(0_0_0/0.8)]">
       <div className="relative aspect-video overflow-hidden bg-surface-2">
         <Thumbnail video={video} />
-        <div className="absolute left-3 top-3 z-10">
+        {generatable && <button type="button" onClick={actions.onGenerate} className="absolute inset-0" aria-label={`Open ${video.title}`} />}
+        <div className="pointer-events-none absolute left-3 top-3 z-10">
           <StatusBadge phase={phase === "uploaded" && video.shortsCount > 0 ? "completed" : phase} />
         </div>
         {video.durationSec != null && (
