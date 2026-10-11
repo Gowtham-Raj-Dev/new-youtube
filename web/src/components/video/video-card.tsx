@@ -4,7 +4,7 @@
 import type { ReactNode } from "react";
 import { CircleAlert, Clapperboard, Film, LoaderCircle, Pencil, RotateCcw, Scissors, Trash2, X } from "lucide-react";
 import { formatBytes, formatDuration, type VideoDoc } from "@shortflow/shared";
-import { useJob, type WithId } from "@/lib/firebase/hooks";
+import type { WithId } from "@/lib/firebase/hooks";
 import type { UploadItem } from "@/lib/uploads/upload-provider";
 import { useStorageUrl } from "@/lib/videos";
 import { formatInZone, toDate } from "@/lib/time";
@@ -19,32 +19,13 @@ export interface VideoCardActions {
   onDelete?: () => void;
   onCancelUpload?: () => void;
   onRetryUpload?: () => void;
-  /** Start (or retry) cutting this video into Shorts. */
+  /** Cut this video into Shorts. */
   onGenerate?: () => void;
 }
 
-/** Mirrors the server's check: a verified source with no Shorts yet, or whose cutting failed. */
+/** A verified source that hasn't been cut yet. To cut it again, its Shorts are deleted first. */
 function canGenerate(video: VideoDoc) {
-  if (video.sourceDeletedAt) return false;
-  if (video.status === "uploaded") return true;
-  if (video.status === "failed") return video.durationSec != null;
-  return video.status === "completed" && video.shortsCount === 0;
-}
-
-function CuttingOverlay({ video }: { video: VideoDoc }) {
-  const { data: job } = useJob(video.activeJobId);
-  const progress = job?.progress ?? 0;
-  return (
-    <div className="absolute inset-0 flex flex-col justify-end bg-[linear-gradient(180deg,rgb(8_8_10/0.2),rgb(8_8_10/0.92))] p-4">
-      <p className="flex items-center gap-2 text-[13px] font-medium">
-        <LoaderCircle className="size-4 animate-spin text-accent" />
-        {job?.stage ?? (video.status === "queued" ? "Waiting to be cut into Shorts" : "Cutting into Shorts…")}
-      </p>
-      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
-        <div className="h-full rounded-full bg-accent shadow-[0_0_12px_var(--accent)] transition-[width] duration-500" style={{ width: `${progress}%` }} />
-      </div>
-    </div>
-  );
+  return !video.sourceDeletedAt && (video.status === "uploaded" || video.status === "completed") && video.shortsCount === 0;
 }
 
 type Phase = "uploading" | "verifying" | "upload-error" | "interrupted" | VideoDoc["status"];
@@ -157,7 +138,7 @@ export function VideoCard({
       <div className="relative aspect-video overflow-hidden bg-surface-2">
         <Thumbnail video={video} />
         <div className="absolute left-3 top-3 z-10">
-          <StatusBadge phase={phase} />
+          <StatusBadge phase={phase === "uploaded" && video.shortsCount > 0 ? "completed" : phase} />
         </div>
         {video.durationSec != null && (
           <span className="absolute bottom-3 right-3 rounded-md bg-black/70 px-1.5 py-0.5 font-mono text-[11px] text-white backdrop-blur">
@@ -186,16 +167,7 @@ export function VideoCard({
             </Button>
           </CenterNote>
         )}
-        {(phase === "queued" || phase === "processing") && <CuttingOverlay video={video} />}
-        {phase === "failed" && (
-          <CenterNote icon={<CircleAlert className="size-5 text-danger" />} title={generatable ? "Couldn't make Shorts" : "Couldn't use this file"} body={video.errorMessage ?? undefined}>
-            {generatable && (
-              <Button size="sm" icon={<RotateCcw className="size-3.5" />} onClick={actions.onGenerate}>
-                Try again
-              </Button>
-            )}
-          </CenterNote>
-        )}
+        {phase === "failed" && <CenterNote icon={<CircleAlert className="size-5 text-danger" />} title="Couldn't use this file" body={video.errorMessage ?? undefined} />}
       </div>
 
       <div className="flex items-start gap-2 p-4">
@@ -217,6 +189,11 @@ export function VideoCard({
               {video.shortsCount} Shorts
             </span>
           </p>
+          {generatable && (
+            <Button size="sm" className="mt-3" icon={<Scissors className="size-3.5" />} onClick={actions.onGenerate}>
+              Generate Shorts
+            </Button>
+          )}
         </div>
         {menu.length > 0 && <Menu items={menu} label={`Actions for ${video.title}`} />}
       </div>

@@ -6,7 +6,6 @@ import { COLLECTIONS, SOURCE_VIDEO_PATH_RE, formatDuration, storagePaths, type V
 import { STORAGE_REGION } from "../config";
 import { logActivity, notify } from "../lib/activity";
 import { grabFrameJpeg, probeMedia, withStorageSource, type ProbeResult } from "../lib/media";
-import { queueShortGeneration } from "../shorts/generate";
 
 async function markFailed(ref: DocumentReference, video: VideoDoc, message: string) {
   const batch = getFirestore().batch();
@@ -19,8 +18,8 @@ async function markFailed(ref: DocumentReference, video: VideoDoc, message: stri
 /**
  * Runs when a source video lands in Storage: verifies it matches what the
  * client declared, reads duration/size with ffprobe and saves a thumbnail.
- * Only then does the video become `uploaded` — clients can't set that status —
- * and join the queue to be cut into Shorts.
+ * Only then does the video become `uploaded` — clients can't set that status.
+ * Cutting into Shorts starts when the user picks a length (generateShorts).
  */
 export const onSourceVideoUploaded = onObjectFinalized(
   { region: STORAGE_REGION, memory: "1GiB", timeoutSeconds: 300 },
@@ -91,8 +90,5 @@ export const onSourceVideoUploaded = onObjectFinalized(
     });
     await batch.commit();
     logger.info("Source video verified", { videoId, ...probe });
-
-    // Every verified upload is cut into Shorts straight away.
-    await queueShortGeneration(videoId);
   },
 );

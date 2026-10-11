@@ -15,6 +15,7 @@
         "node_modules",
         ".git",
         "src",
+        ".local",
         "*.log",
         "tsconfig.json",
         ".env.example"

@@ -180,9 +180,35 @@ service cloud.firestore {
 
     // ─── shorts/{shortId} ──────────────────────────────────────────────────────
 
+    // Shorts are cut on the user's own machine (the PC helper), so the client
+    // registers them. A new Short must belong to one of the user's videos, point
+    // at its own file, and start unpublished.
+
     match /shorts/{shortId} {
       allow read: if ownsExisting();
-      allow create: if false;
+
+      allow create: if signedIn()
+        && incoming().keys().hasOnly(['userId', 'videoId', 'segmentIndex', 'startSec', 'endSec', 'durationSec', 'storagePath', 'thumbnailPath', 'cropMode', 'status', 'createdAt', 'title', 'description', 'tags', 'privacy', 'categoryId', 'publishAt', 'youtubeVideoId', 'publishedAt', 'errorMessage'])
+        && incoming().keys().hasAll(['userId', 'videoId', 'segmentIndex', 'startSec', 'endSec', 'durationSec', 'storagePath', 'thumbnailPath', 'cropMode', 'status', 'createdAt', 'title', 'description', 'tags', 'privacy', 'categoryId', 'publishAt', 'youtubeVideoId', 'publishedAt', 'errorMessage'])
+        && incoming().userId == request.auth.uid
+        && incoming().videoId is string
+        && get(/databases/$(database)/documents/videos/$(incoming().videoId)).data.userId == request.auth.uid
+        && incoming().segmentIndex is int && incoming().segmentIndex >= 0 && incoming().segmentIndex < 999
+        && shortId.matches('^' + incoming().videoId + '_[0-9]{3}$')
+        && incoming().startSec is number && incoming().startSec >= 0
+        && incoming().endSec is number && incoming().endSec > incoming().startSec
+        // 180 s — keep in sync with MAX_SHORT_SECONDS.
+        && incoming().durationSec is number && incoming().durationSec > 0 && incoming().durationSec <= 180
+        && incoming().storagePath == 'users/' + request.auth.uid + '/shorts/' + shortId + '/video.mp4'
+        && (incoming().thumbnailPath == null || incoming().thumbnailPath == 'users/' + request.auth.uid + '/shorts/' + shortId + '/thumbnail.jpg')
+        && incoming().cropMode in ['center', 'smart', 'blur', 'fit']
+        && incoming().status == 'ready'
+        && incoming().createdAt == request.time
+        && isYoutubeMetadata(incoming())
+        && incoming().publishAt == null
+        && incoming().youtubeVideoId == null
+        && incoming().publishedAt == null
+        && incoming().errorMessage == null;
 
       // Metadata edits only, and never while an upload is in flight or done.
       allow update: if ownsExisting()

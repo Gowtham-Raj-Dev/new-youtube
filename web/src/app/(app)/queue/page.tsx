@@ -1,10 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ExternalLink, Layers, ListX, LoaderCircle } from "lucide-react";
-import { DEFAULT_SETTINGS, type ScheduleDoc, type ShortDoc, type VideoDoc } from "@shortflow/shared";
+import { ExternalLink, Layers, ListX } from "lucide-react";
+import { DEFAULT_SETTINGS, type ScheduleDoc, type ShortDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useJob, useSchedules, useSettings, useShorts, useVideos, type WithId } from "@/lib/firebase/hooks";
+import { useSchedules, useSettings, useShorts, type WithId } from "@/lib/firebase/hooks";
 import { unqueueShort, youtubeShortUrl } from "@/lib/shorts";
 import { friendlyCallableError } from "@/lib/youtube";
 import { formatInZone, toDate } from "@/lib/time";
@@ -16,26 +16,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ShortStatusBadge, ShortThumbnail } from "@/components/short/short-card";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** A video on its way through the FFmpeg worker, with live progress from its job. */
-function CuttingRow({ video }: { video: WithId<VideoDoc> }) {
-  const { data: job } = useJob(video.activeJobId);
-  const progress = job?.progress ?? 0;
-  return (
-    <li className="px-5 py-3.5">
-      <div className="flex items-center justify-between gap-3">
-        <p className="min-w-0 truncate text-[13.5px] font-medium">{video.title}</p>
-        <span className="flex shrink-0 items-center gap-2 text-[12.5px] text-muted">
-          <LoaderCircle className="size-3.5 animate-spin text-accent" />
-          {job?.stage ?? (video.status === "queued" ? "Waiting to start" : "Starting…")}
-        </span>
-      </div>
-      <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-white/10">
-        <div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${progress}%` }} />
-      </div>
-    </li>
-  );
-}
 
 function QueueRow({
   schedule,
@@ -100,14 +80,12 @@ export default function UploadQueuePage() {
   const uid = user?.uid;
   const { data: schedules, loading, error } = useSchedules(uid);
   const { data: shorts } = useShorts(uid);
-  const { data: videos } = useVideos(uid);
   const { data: settings } = useSettings(uid);
   const [banner, setBanner] = useState<string | null>(null);
   const [now] = useState(() => Date.now());
 
   const timezone = (settings ?? DEFAULT_SETTINGS).publishing.timezone;
   const shortsById = useMemo(() => new Map(shorts.map((s) => [s.id, s])), [shorts]);
-  const cutting = videos.filter((v) => v.status === "queued" || v.status === "processing");
 
   const dayLabel = (ms: number) => formatInZone(new Date(ms), timezone, { dateStyle: undefined, timeStyle: undefined, weekday: "long", day: "numeric", month: "long" });
   const friendlyDay = (ms: number) => {
@@ -137,14 +115,14 @@ export default function UploadQueuePage() {
   }, [schedules, timezone, now]);
 
   const waiting = days.reduce((sum, day) => sum + day.items.length, 0);
-  const empty = !loading && cutting.length === 0 && waiting === 0 && finished.length === 0;
+  const empty = !loading && waiting === 0 && finished.length === 0;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Queue</h2>
-          <p className="mt-1 text-sm text-muted">What&apos;s being cut, what&apos;s waiting to go out, and what happened to the last week&apos;s uploads. Times are in {timezone.replaceAll("_", " ")}.</p>
+          <p className="mt-1 text-sm text-muted">What&apos;s waiting to go out, and what happened to the last week&apos;s uploads. Times are in {timezone.replaceAll("_", " ")}.</p>
         </div>
         <ButtonLink href="/schedule" variant="secondary" className="shrink-0">
           Change schedule
@@ -157,17 +135,6 @@ export default function UploadQueuePage() {
         </Alert>
       )}
       {error && <Alert tone="error">We couldn&apos;t load the queue. Check your connection and refresh the page.</Alert>}
-
-      {cutting.length > 0 && (
-        <Card>
-          <CardHeader title="Cutting into Shorts" description="Runs in the cloud — you can close this page." />
-          <ul className="mt-3 divide-y divide-line">
-            {cutting.map((video) => (
-              <CuttingRow key={video.id} video={video} />
-            ))}
-          </ul>
-        </Card>
-      )}
 
       {loading ? (
         <Card className="space-y-3 p-5">

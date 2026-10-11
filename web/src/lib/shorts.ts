@@ -1,5 +1,6 @@
 import { doc, updateDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
+import { getDownloadURL, ref as storageRef } from "firebase/storage";
 import { COLLECTIONS, type PrivacyStatus, type ShortDoc, type ShortStatus } from "@shortflow/shared";
 import { firebase } from "./firebase/client";
 
@@ -53,11 +54,11 @@ export interface QueueResult {
 }
 
 /** "Submit to queue": the server gives each Short the next free slot of the publishing schedule, in this order. */
-export async function queueShorts(shortIds: string[], connectionId?: string): Promise<QueueResult> {
-  const call = httpsCallable<{ shortIds: string[]; connectionId?: string }, QueueResult>(firebase().functions, "queueShorts");
+export async function queueShorts(shortIds: string[], connectionId?: string, now = false): Promise<QueueResult> {
+  const call = httpsCallable<{ shortIds: string[]; connectionId?: string; now?: boolean }, QueueResult>(firebase().functions, "queueShorts");
   let result: QueueResult | null = null;
   for (let i = 0; i < shortIds.length; i += CALL_LIMIT) {
-    const { data } = await call({ shortIds: shortIds.slice(i, i + CALL_LIMIT), connectionId });
+    const { data } = await call({ shortIds: shortIds.slice(i, i + CALL_LIMIT), connectionId, now });
     result = result ? { queued: result.queued + data.queued, firstAt: result.firstAt, lastAt: data.lastAt } : data;
   }
   return result!;
@@ -67,8 +68,21 @@ export async function unqueueShort(shortId: string) {
   await httpsCallable(firebase().functions, "unqueueShort")({ shortId });
 }
 
-export async function generateShorts(videoId: string) {
-  await httpsCallable(firebase().functions, "generateShorts")({ videoId });
+/**
+ * Saves each Short's MP4 to the user's downloads folder. The files are stored
+ * with an `attachment` disposition, so opening the URL downloads instead of playing.
+ */
+export async function downloadShorts(shorts: Array<Pick<ShortDoc, "storagePath">>) {
+  for (const short of shorts) {
+    const url = await getDownloadURL(storageRef(firebase().storage, short.storagePath));
+    const frame = document.createElement("iframe");
+    frame.style.display = "none";
+    frame.src = url;
+    document.body.appendChild(frame);
+    setTimeout(() => frame.remove(), 60_000);
+    // Browsers drop downloads fired in the same instant.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+  }
 }
 
 export type ShortFilter = "all" | "ready" | "queued" | "published" | "failed";

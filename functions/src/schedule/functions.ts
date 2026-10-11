@@ -27,7 +27,9 @@ async function pickConnection(userId: string, requested: unknown): Promise<strin
  * publishing schedule, in the order given. Slots are worked out here, not in
  * the browser, so two tabs can never book the same one.
  */
-export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string }>(async (request) => {
+export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string; now?: boolean }>(async (request) => {
+  // "Upload now": skip the schedule and hand everything to the very next publishing sweep.
+  const uploadNow = request.data?.now === true;
   const userId = requireUid(request.auth);
   const requested = request.data?.shortIds;
   if (!Array.isArray(requested) || requested.length === 0 || requested.length > MAX_PER_CALL || !requested.every((id) => typeof id === "string" && id)) {
@@ -39,7 +41,7 @@ export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string }
   const connectionId = await pickConnection(userId, request.data?.connectionId);
   const settings = ((await db.collection(COLLECTIONS.settings).doc(userId).get()).data() as SettingsDoc | undefined) ?? DEFAULT_SETTINGS;
   const rules = slotRulesFrom(settings);
-  if (rules.publishDays.length === 0) throw new HttpsError("failed-precondition", "Pick at least one publishing day on the Schedule page first.");
+  if (!uploadNow && rules.publishDays.length === 0) throw new HttpsError("failed-precondition", "Pick at least one publishing day on the Schedule page first.");
 
   const slots = await db.runTransaction(async (tx) => {
     const snaps = await tx.getAll(...shortIds.map((id) => db.collection(COLLECTIONS.shorts).doc(id)));
@@ -54,7 +56,8 @@ export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string }
     const now = Date.now();
     const upcoming = await tx.get(db.collection(COLLECTIONS.schedules).where("userId", "==", userId).where("publishAt", ">=", Timestamp.fromMillis(now)));
     const taken = upcoming.docs.filter((d) => !shortIds.includes(d.id)).map((d) => (d.get("publishAt") as Timestamp).toMillis());
-    const slots = nextSlots(rules, shortIds.length, now + LEAD_MS, taken);
+    // A millisecond apart so the sweep, which goes by publishAt, keeps the order given.
+    const slots = uploadNow ? shortIds.map((_, i) => now + i) : nextSlots(rules, shortIds.length, now + LEAD_MS, taken);
     if (slots.length < shortIds.length) throw new HttpsError("failed-precondition", "Your schedule has no free slots. Check the Schedule page.");
 
     const stamp = FieldValue.serverTimestamp();

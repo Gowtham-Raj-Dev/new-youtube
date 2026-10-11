@@ -5,6 +5,7 @@ node_modules/
 web/.next/
 web/out/
 functions/lib/
+functions/.local/
 worker/dist/
 *.tsbuildinfo
 

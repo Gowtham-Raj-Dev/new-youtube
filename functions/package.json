@@ -7,6 +7,7 @@
   },
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=cjs --sourcemap --outfile=lib/index.js --external:firebase-functions --external:firebase-admin --external:ffmpeg-static --external:@ffprobe-installer/ffprobe --alias:@shortflow/shared=../packages/shared/src/index.ts",
+    "helper": "esbuild src/local/split-server.ts --bundle --platform=node --target=node22 --format=cjs --outfile=.local/split-server.js --log-level=warning --external:firebase-functions --external:firebase-admin --external:ffmpeg-static --external:@ffprobe-installer/ffprobe --alias:@shortflow/shared=../packages/shared/src/index.ts && node .local/split-server.js",
     "typecheck": "tsc --noEmit",
     "deploy": "firebase deploy --only functions"
   },

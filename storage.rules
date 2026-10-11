@@ -41,9 +41,18 @@ service firebase.storage {
       allow write: if false;
     }
 
+    // Shorts are cut on the user's own machine and uploaded from the browser.
+    // Overwriting is allowed so a failed save can be retried; deleting goes
+    // through the backend with the rest of the video.
     match /users/{uid}/shorts/{shortId}/{fileName} {
       allow read: if isOwner(uid);
-      allow write: if false;
+
+      allow create, update: if isOwner(uid)
+        && request.resource.size > 0
+        && ((fileName == 'video.mp4' && request.resource.contentType == 'video/mp4' && request.resource.size <= 500 * 1024 * 1024)
+          || (fileName == 'thumbnail.jpg' && request.resource.contentType == 'image/jpeg' && request.resource.size <= 2 * 1024 * 1024));
+
+      allow delete: if false;
     }
 
     match /{allPaths=**} {

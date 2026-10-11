@@ -235,10 +235,6 @@ export interface JobDoc {
   startedAt: TimestampLike | null;
   completedAt: TimestampLike | null;
   error: string | null;
-  /** video_processing only: settings snapshot, so a resumed job cuts the same segments. */
-  processing?: SettingsDoc["processing"];
-  /** Refreshed while a worker holds the job. Null = free to pick up; stale = the worker died. */
-  heartbeatAt?: TimestampLike | null;
 }
 
 /** youtubeConnections/{connectionId} — public channel info, readable by the owner. Tokens live in youtubeCredentials. */

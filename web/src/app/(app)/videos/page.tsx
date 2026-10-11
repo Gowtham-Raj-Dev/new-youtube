@@ -3,19 +3,17 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Film, Sparkles } from "lucide-react";
-import { DEFAULT_TIMEZONE, type VideoDoc } from "@shortflow/shared";
+import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE, type VideoDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useUserDoc, useVideos, type WithId } from "@/lib/firebase/hooks";
+import { useSettings, useShorts, useUserDoc, useVideos, type WithId } from "@/lib/firebase/hooks";
 import { useUploads, type RejectedFile } from "@/lib/uploads/upload-provider";
 import { matchesFilter, type VideoFilter } from "@/lib/videos";
-import { generateShorts } from "@/lib/shorts";
-import { friendlyCallableError } from "@/lib/youtube";
 import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Dropzone } from "@/components/video/dropzone";
 import { VideoCard, VideoCardSkeleton } from "@/components/video/video-card";
-import { DeleteVideoDialog, RenameVideoDialog } from "@/components/video/video-dialogs";
+import { DeleteVideoDialog, GenerateShortsDialog, RenameVideoDialog } from "@/components/video/video-dialogs";
 import { cn } from "@/lib/cn";
 
 const FILTERS: Array<{ id: VideoFilter; label: string }> = [
@@ -28,13 +26,23 @@ const FILTERS: Array<{ id: VideoFilter; label: string }> = [
 export default function VideosPage() {
   const { user } = useAuth();
   const { data: profile } = useUserDoc(user?.uid);
-  const { data: videos, loading, error } = useVideos(user?.uid);
+  const { data: storedVideos, loading, error } = useVideos(user?.uid);
+  const { data: shorts } = useShorts(user?.uid);
+  const { data: settings } = useSettings(user?.uid);
+  const [made, setMade] = useState<number | null>(null);
+
+  // Shorts are registered by the browser, so the count comes from the Shorts themselves.
+  const videos = useMemo(() => {
+    const perVideo = new Map<string, number>();
+    for (const short of shorts) perVideo.set(short.videoId, (perVideo.get(short.videoId) ?? 0) + 1);
+    return storedVideos.map((video) => ({ ...video, shortsCount: perVideo.get(video.id) ?? 0 }));
+  }, [storedVideos, shorts]);
   const { addFiles, byVideoId, cancel, retry, uploads } = useUploads();
   const [filter, setFilter] = useState<VideoFilter>("all");
   const [rejected, setRejected] = useState<RejectedFile[]>([]);
   const [deleting, setDeleting] = useState<WithId<VideoDoc> | null>(null);
   const [renaming, setRenaming] = useState<WithId<VideoDoc> | null>(null);
-  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generating, setGenerating] = useState<WithId<VideoDoc> | null>(null);
   const timezone = profile?.timezone ?? DEFAULT_TIMEZONE;
 
   const counts = useMemo(
@@ -49,20 +57,11 @@ export default function VideosPage() {
     setRejected(addFiles(files));
   }
 
-  async function generate(videoId: string) {
-    setGenerateError(null);
-    try {
-      await generateShorts(videoId);
-    } catch (err) {
-      setGenerateError(friendlyCallableError(err));
-    }
-  }
-
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Video library</h2>
-        <p className="mt-1 text-sm text-muted">Upload long-form videos. ShortFlow checks each one, then cuts it into vertical Shorts automatically.</p>
+        <p className="mt-1 text-sm text-muted">Upload long-form videos. ShortFlow checks each one; then you choose how to cut it into vertical Shorts.</p>
       </div>
 
       {!loading && <Dropzone onFiles={onFiles} compact={videos.length > 0} />}
@@ -87,18 +86,22 @@ export default function VideosPage() {
           </button>
         </Alert>
       ))}
-      {error && <Alert tone="error">We couldn&apos;t load your videos. Check your connection and refresh the page.</Alert>}
-      {generateError && (
-        <Alert tone="error" onDismiss={() => setGenerateError(null)}>
-          {generateError}
+      {made !== null && (
+        <Alert tone="success" onDismiss={() => setMade(null)}>
+          {made === 1 ? "1 Short is" : `${made} Shorts are`} ready.{" "}
+          <Link href="/shorts" className="font-medium text-accent hover:underline">
+            Open the Shorts page
+          </Link>{" "}
+          to play, download, upload or schedule {made === 1 ? "it" : "them"}.
         </Alert>
       )}
+      {error && <Alert tone="error">We couldn&apos;t load your videos. Check your connection and refresh the page.</Alert>}
 
       {videos.length > 0 && (
         <Card className="flex items-center gap-3 border-accent/20 bg-[linear-gradient(100deg,var(--accent-soft),transparent_60%)] px-4 py-3">
           <Sparkles className="size-4 shrink-0 text-accent" />
           <p className="text-[13px] text-muted">
-            <span className="font-medium text-text">New uploads are cut into vertical Shorts automatically.</span> For a video uploaded earlier, open its menu and choose Generate Shorts. Finished Shorts appear on the{" "}
+            <span className="font-medium text-text">Press Generate Shorts on a video</span> and choose how long each Short should be. Finished Shorts appear on the{" "}
             <Link href="/shorts" className="font-medium text-accent hover:underline">
               Shorts page
             </Link>
@@ -145,7 +148,7 @@ export default function VideosPage() {
               onDelete={() => setDeleting(video)}
               onCancelUpload={() => void cancel(video.id)}
               onRetryUpload={() => retry(video.id)}
-              onGenerate={() => void generate(video.id)}
+              onGenerate={() => setGenerating(video)}
             />
           ))}
         </div>
@@ -158,6 +161,17 @@ export default function VideosPage() {
       )}
 
       {deleting && <DeleteVideoDialog video={deleting} onClose={() => setDeleting(null)} />}
+      {generating && (
+        <GenerateShortsDialog
+          video={generating}
+          settings={settings ?? DEFAULT_SETTINGS}
+          onClose={() => setGenerating(null)}
+          onDone={(count) => {
+            setGenerating(null);
+            setMade(count);
+          }}
+        />
+      )}
       {renaming && <RenameVideoDialog video={renaming} onClose={() => setRenaming(null)} />}
     </div>
   );

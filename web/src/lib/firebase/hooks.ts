@@ -15,7 +15,6 @@ import {
 import {
   COLLECTIONS,
   type ActivityLogDoc,
-  type JobDoc,
   type NotificationDoc,
   type ScheduleDoc,
   type SettingsDoc,
@@ -81,11 +80,6 @@ export function useVideos(uid: string | undefined, count = 100) {
 
 export function useSettings(uid: string | undefined) {
   return useLiveDoc<SettingsDoc>(uid ? `settings:${uid}` : null, () => doc(firebase().db, COLLECTIONS.settings, uid!));
-}
-
-/** Live progress of a processing job; pass the video's `activeJobId`. */
-export function useJob(jobId: string | null | undefined) {
-  return useLiveDoc<JobDoc>(jobId ? `job:${jobId}` : null, () => doc(firebase().db, COLLECTIONS.jobs, jobId!));
 }
 
 export function useShorts(uid: string | undefined, count = 300) {
