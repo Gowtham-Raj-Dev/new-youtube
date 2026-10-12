@@ -34,3 +34,6 @@ npm-debug.log*
 # functions emulator-only overrides
 functions/.secret.local
 functions/.env.local
+
+# the downloadable PC helper, built by `npm run pack-helper`
+web/public/downloads/

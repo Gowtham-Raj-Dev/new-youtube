@@ -4,28 +4,31 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu } from "lucide-react";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useUserDoc } from "@/lib/firebase/hooks";
+import { useYoutubeConnections } from "@/lib/firebase/hooks";
 import { LogoMark, YouTubeIcon } from "@/components/ui/brand-icons";
 import { cn } from "@/lib/cn";
-import { FOOTER_NAV, MAIN_NAV, isActive } from "./nav";
+import { ADMIN_NAV, FOOTER_NAV, MAIN_NAV, isActive } from "./nav";
 import { NotificationsMenu } from "./notifications-menu";
 import { Avatar } from "./avatar";
 
-function YouTubeStatus({ connected, loading }: { connected: boolean; loading: boolean }) {
+/** `expired` wins over `connected`: a channel Google cut off needs the user's attention even if another still works. */
+function YouTubeStatus({ connected, expired, loading }: { connected: boolean; expired: boolean; loading: boolean }) {
   return (
     <Link
       href="/youtube"
       className={cn(
         "hidden h-9 items-center gap-2 rounded-xl border px-3 text-[12.5px] font-medium transition sm:flex",
-        connected
-          ? "border-success/20 bg-success/[0.06] text-text hover:border-success/35"
-          : "border-line bg-surface-2/60 text-muted hover:border-line-strong hover:text-text",
+        expired
+          ? "border-danger/30 bg-danger/10 text-danger hover:border-danger/50"
+          : connected
+            ? "border-success/20 bg-success/[0.06] text-text hover:border-success/35"
+            : "border-line bg-surface-2/60 text-muted hover:border-line-strong hover:text-text",
         loading && "opacity-0",
       )}
     >
       <YouTubeIcon className="size-4" />
-      {connected ? "Connected" : "Connect YouTube"}
-      <span className={cn("size-1.5 rounded-full", connected ? "bg-success text-success animate-pulse-dot" : "bg-faint")} />
+      {expired ? "Reconnect YouTube" : connected ? "Connected" : "Connect YouTube"}
+      <span className={cn("size-1.5 rounded-full", expired ? "bg-danger animate-pulse-dot" : connected ? "bg-success text-success animate-pulse-dot" : "bg-faint")} />
     </Link>
   );
 }
@@ -33,8 +36,8 @@ function YouTubeStatus({ connected, loading }: { connected: boolean; loading: bo
 export function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
   const pathname = usePathname();
   const { user } = useAuth();
-  const { data: profile, loading } = useUserDoc(user?.uid);
-  const title = [...MAIN_NAV, ...FOOTER_NAV].find((item) => isActive(pathname, item.href))?.label ?? "";
+  const { data: connections, loading } = useYoutubeConnections(user?.uid);
+  const title = [...MAIN_NAV, ...FOOTER_NAV, ...ADMIN_NAV].find((item) => isActive(pathname, item.href))?.label ?? "";
 
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-line bg-bg/70 px-4 backdrop-blur-xl sm:px-6 lg:px-8">
@@ -51,7 +54,7 @@ export function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
       <h1 className="text-[15px] font-semibold tracking-tight">{title}</h1>
 
       <div className="ml-auto flex items-center gap-2">
-        <YouTubeStatus connected={!!profile?.youtubeConnected} loading={loading} />
+        <YouTubeStatus connected={connections.some((c) => c.status === "connected")} expired={connections.some((c) => c.status !== "connected")} loading={loading} />
         {user && <NotificationsMenu uid={user.uid} />}
         {user && (
           <Link href="/settings" className="lg:hidden" aria-label="Profile and settings">

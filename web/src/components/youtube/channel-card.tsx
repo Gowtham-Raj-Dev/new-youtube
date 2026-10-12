@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element -- YouTube avatars in a static export */
 import { useState } from "react";
-import { RefreshCw, Unplug } from "lucide-react";
+import { Link2, RefreshCw, TriangleAlert, Unplug } from "lucide-react";
 import type { YoutubeConnectionDoc } from "@shortflow/shared";
 import type { WithId } from "@/lib/firebase/hooks";
 import { connectYouTube, disconnectYouTube, friendlyCallableError, refreshYouTubeChannel } from "@/lib/youtube";
@@ -18,10 +18,13 @@ const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFracti
 export function ChannelCard({
   connection,
   timezone,
+  waiting,
   onError,
 }: {
   connection: WithId<YoutubeConnectionDoc>;
   timezone: string;
+  /** Queued Shorts for this channel: how many, how many are past their time, and when the next one is due. */
+  waiting: { total: number; overdue: number; nextAt: string | null };
   onError: (message: string) => void;
 }) {
   const [busy, setBusy] = useState<"refresh" | "disconnect" | "reconnect" | null>(null);
@@ -69,21 +72,50 @@ export function ChannelCard({
           </p>
         </div>
 
-        <div className="flex gap-2 sm:shrink-0">
+        <div className="flex flex-wrap gap-2 sm:shrink-0">
           {expired ? (
-            <Button loading={busy === "reconnect"} onClick={() => run("reconnect", connectYouTube)}>
-              Reconnect
+            <Button loading={busy === "reconnect"} icon={<Link2 className="size-4" />} onClick={() => run("reconnect", connectYouTube)}>
+              Reconnect now
             </Button>
           ) : (
-            <Button variant="secondary" size="sm" loading={busy === "refresh"} icon={<RefreshCw className="size-3.5" />} onClick={() => run("refresh", () => refreshYouTubeChannel(connection.id))}>
-              Refresh
-            </Button>
+            <>
+              <Button variant="secondary" size="sm" loading={busy === "refresh"} icon={<RefreshCw className="size-3.5" />} onClick={() => run("refresh", () => refreshYouTubeChannel(connection.id))}>
+                Refresh
+              </Button>
+              {/* Signing in with Google again renews the saved permission in place. */}
+              <Button variant="secondary" size="sm" loading={busy === "reconnect"} icon={<Link2 className="size-3.5" />} onClick={() => run("reconnect", connectYouTube)}>
+                Reconnect
+              </Button>
+            </>
           )}
           <Button variant="ghost" size="sm" icon={<Unplug className="size-3.5" />} onClick={() => setConfirming(true)}>
             Disconnect
           </Button>
         </div>
       </div>
+
+      {expired && (
+        <div className="mt-5 flex items-start gap-3 rounded-xl border border-danger/25 bg-danger/10 px-4 py-3">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0 text-danger" />
+          <p className="text-[13px] leading-relaxed text-muted">
+            <span className="font-medium text-text">Your Google session for this channel expired, so ShortFlow cut the connection.</span> Nothing uploads to it until you reconnect.{" "}
+            {waiting.overdue > 0 ? (
+              <>
+                <span className="font-medium text-danger">
+                  {waiting.overdue === 1 ? "1 queued Short has" : `${waiting.overdue} queued Shorts have`} already missed {waiting.overdue === 1 ? "its" : "their"} time.
+                </span>{" "}
+                Reconnect now and {waiting.overdue === 1 ? "it goes" : "they go"} out within about 5 minutes.
+              </>
+            ) : waiting.nextAt ? (
+              <>
+                <span className="font-medium text-danger">Reconnect before {waiting.nextAt}</span> — that is when your next queued Short is due ({waiting.total} waiting). Later than that and it goes out late.
+              </>
+            ) : (
+              "Nothing is queued for it right now, but you can't queue or upload until you do."
+            )}
+          </p>
+        </div>
+      )}
 
       <ConfirmDialog
         open={confirming}

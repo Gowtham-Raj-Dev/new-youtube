@@ -1,6 +1,6 @@
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { COLLECTIONS, WEEKDAYS, dailySlotMinutes, nextSlots, type ScheduleDoc, type SettingsDoc, type SlotRules, type Weekday } from "@shortflow/shared";
+import { COLLECTIONS, WEEKDAYS, dailySlotMinutes, nextSlots, slotMinutesOn, type ScheduleDoc, type SettingsDoc, type SlotRules, type Weekday } from "@shortflow/shared";
 import { firebase } from "./firebase/client";
 import { toDate } from "./time";
 
@@ -45,12 +45,15 @@ export function describeDays(days: readonly Weekday[]) {
 
 /** "every day at 6:00 pm and 10:00 pm". */
 export function describeSchedule(rules: SlotRules) {
+  if (rules.daySlots) return "at the times you set for each day";
   const times = dailySlotMinutes(rules).map(formatSlotTime);
   return `${describeDays(rules.publishDays)} at ${listFormat.format(times)}`;
 }
 
 /** The schedule as a few short facts — "Every day", "4 a day", "8:00 pm – 11:00 pm", "1 hour apart" — that stay short however many slots there are. */
 export function scheduleFacts(rules: SlotRules): string[] {
+  // Each day has its own times: one fact per day that has any — "Mon · 3", "Tue · 4".
+  if (rules.daySlots) return WEEKDAYS.map((day) => ({ day, count: slotMinutesOn(rules, day).length })).filter((d) => d.count > 0).map((d) => `${WEEKDAY_LABELS[d.day]} · ${d.count}`);
   const slots = dailySlotMinutes(rules);
   const days = describeDays(rules.publishDays).replace(/^on /, "");
   const facts = [days.charAt(0).toUpperCase() + days.slice(1), `${slots.length} a day`];

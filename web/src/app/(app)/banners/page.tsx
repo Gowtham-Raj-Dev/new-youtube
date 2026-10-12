@@ -32,12 +32,14 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Field, inputClasses } from "@/components/ui/field";
 import { Segmented } from "@/components/ui/segmented";
 import { BannerImage } from "@/components/banner/banner-image";
+import { ReactionLibrary, ReactionPicker, ReactionSizing, ReactionStrip, useReactionSetup } from "@/components/short/reaction-picker";
 import { cn } from "@/lib/cn";
 
-type Tab = "design" | "upload" | "library";
+type Tab = "design" | "upload" | "reaction" | "library";
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "design", label: "Design a banner" },
   { id: "upload", label: "Upload an image" },
+  { id: "reaction", label: "Reaction video" },
   { id: "library", label: "My banners" },
 ];
 
@@ -127,10 +129,62 @@ function KindDiagram({ kind }: { kind: UploadKind }) {
   );
 }
 
+/**
+ * Sets up the reaction video once: which ones are kept, which plays above or
+ * below the Short's own video, and how big. Every change is saved as it is made,
+ * and comes back chosen wherever Shorts are made.
+ */
+function ReactionSetupTab() {
+  const reaction = useReactionSetup(0, true);
+
+  return (
+    <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <Card className="divide-y divide-line">
+        <Step number={1} title="Add your reaction videos" hint="Kept in this browser on this PC — they aren't uploaded anywhere.">
+          <ReactionLibrary setup={reaction} />
+        </Step>
+        <Step number={2} title="Put one at the top or the bottom" hint="Your reaction plays in its own strip next to the main video, on repeat until the Short ends.">
+          <ReactionPicker setup={reaction} where="every Short" manage={false} />
+        </Step>
+        {reaction.file && (
+          <Step number={3} title="Size it" hint="The main video gets the rest of the Short; banners still go around both.">
+            <ReactionSizing setup={reaction} />
+          </Step>
+        )}
+      </Card>
+
+      <Card className="order-first space-y-4 p-5 lg:sticky lg:top-20 lg:order-none">
+        <div className="flex items-baseline justify-between gap-3">
+          <h3 className="text-[14.5px] font-semibold tracking-tight">Live preview</h3>
+          <span className="text-[12px] text-muted">Video gets {reaction.file ? 100 - reaction.percent : 100}%</span>
+        </div>
+        <div className="relative mx-auto flex aspect-[9/16] w-full max-w-[200px] flex-col overflow-hidden rounded-[1.25rem] border border-line-strong bg-[linear-gradient(160deg,#1d1d23,#0c0c10)] shadow-2xl lg:max-w-[270px]">
+          <ReactionStrip setup={reaction} position="top" />
+          <div className="grid min-h-0 flex-1 place-items-center">
+            <div className="flex flex-col items-center gap-2 text-faint">
+              <span className="grid size-10 place-items-center rounded-full border border-line-strong">
+                <Play className="size-4 translate-x-px" />
+              </span>
+              <span className="text-[11.5px] font-medium">Your video</span>
+            </div>
+          </div>
+          <ReactionStrip setup={reaction} position="bottom" />
+        </div>
+        <p className="text-center text-[12px] leading-relaxed text-muted">
+          Saved as you go — nothing to press. It is already chosen when you generate Shorts from a video or add Shorts from your files, and the Short keeps the main video&apos;s sound.
+        </p>
+      </Card>
+    </div>
+  );
+}
+
 export default function BannersPage() {
   const { user } = useAuth();
   const { data: banners, loading, error } = useBanners(user?.uid);
   const [tab, setTab] = useState<Tab>("design");
+  // "Add or resize" beside the reaction video rows links straight to that tab.
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time read of the link's ?tab=
+  useEffect(() => void (new URLSearchParams(window.location.search).get("tab") === "reaction" && setTab("reaction")), []);
   const [mode, setMode] = useState<Mode>("top");
   /** In "both" mode, the banner the steps are changing. */
   const [editing, setEditing] = useState<BannerPosition>("top");
@@ -283,7 +337,7 @@ export default function BannersPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Banners</h2>
-        <p className="mt-1 text-sm text-muted">Strips across the top and bottom of your Shorts. Design one here or upload your own image, then pick it when you generate Shorts from a video.</p>
+        <p className="mt-1 text-sm text-muted">Strips across the top and bottom of your Shorts. Design one here or upload your own image, then pick it when you generate Shorts from a video. For reaction Shorts, set a second video at the top or bottom.</p>
       </div>
 
       <div className="flex w-fit max-w-full flex-wrap gap-1 rounded-xl border border-line bg-surface/60 p-1" role="tablist">
@@ -309,7 +363,7 @@ export default function BannersPage() {
       {notice && (
         <Alert tone={notice.tone} onDismiss={() => setNotice(null)}>
           {notice.message}
-          {notice.tone === "success" && tab !== "library" && (
+          {notice.tone === "success" && tab !== "library" && tab !== "reaction" && (
             <>
               {" "}
               <button onClick={() => setTab("library")} className="font-medium text-accent hover:underline">
@@ -560,6 +614,8 @@ export default function BannersPage() {
           </Step>
         </Card>
       )}
+
+      {tab === "reaction" && <ReactionSetupTab />}
 
       {tab === "library" &&
         (!loading && banners.length === 0 ? (

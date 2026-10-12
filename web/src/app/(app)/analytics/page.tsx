@@ -185,7 +185,7 @@ function videoRows(shorts: WithId<ShortDoc>[], videos: WithId<VideoDoc>[]) {
   }
   const titles = new Map(videos.map((video) => [video.id, video.title]));
   return [...perVideo]
-    .map(([videoId, row]) => ({ videoId, title: titles.get(videoId) ?? "Deleted video", ...row }))
+    .map(([videoId, row]) => ({ videoId, title: titles.get(videoId) ?? (videoId.startsWith("upload-") ? "Uploaded from your files" : "Deleted video"), ...row }))
     .sort((a, b) => b.made - a.made)
     .slice(0, 6);
 }

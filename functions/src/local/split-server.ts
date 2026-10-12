@@ -10,10 +10,33 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { BANNER_POSITIONS, CROP_MODES, MAX_SHORT_SECONDS, MIN_SHORT_SECONDS, OUTPUT_QUALITIES, bannerHeight, planSegments, type BannerPosition, type CropMode, type OutputQuality, type Segment } from "@shortflow/shared";
-import { detectCrop, detectEncoder, grabFrameJpeg, probeMedia, renderShort, type BannerImage, type CropRect } from "../lib/media";
+import {
+  BANNER_POSITIONS,
+  CROP_MODES,
+  MAIN_VIDEO_PERCENT_MIN,
+  MAX_SHORT_SECONDS,
+  MIN_SHORT_SECONDS,
+  OUTPUT_QUALITIES,
+  REACTION_FITS,
+  REACTION_PERCENT_MAX,
+  REACTION_PERCENT_MIN,
+  REACTION_POSITIONS,
+  SHORT_HEIGHT,
+  TAIL_MODES,
+  bannerHeight,
+  planSegments,
+  reactionHeight,
+  type BannerPosition,
+  type CropMode,
+  type OutputQuality,
+  type ReactionLook,
+  type Segment,
+  type TailMode,
+} from "@shortflow/shared";
+import { detectCrop, detectEncoder, grabFrameJpeg, probeMedia, renderShort, type BannerImage, type CropRect, type ReactionVideo } from "../lib/media";
 
-const PORT = 4777;
+/** SHORTFLOW_PORT is for trying a second helper beside a running one; the app always looks on 4777. */
+const PORT = Number(process.env.SHORTFLOW_PORT) || 4777;
 /** Only ever fetch sources from Firebase Storage (or its local emulator). */
 const SOURCE_HOSTS = ["firebasestorage.googleapis.com", "127.0.0.1"];
 /** Finished files are deleted this long after a job ends, in case the browser never collects them. */
@@ -76,6 +99,130 @@ function isLabelRequest(value: unknown): value is LabelRequest {
   return typeof l === "object" && l !== null && typeof l.template === "string" && l.template.length <= 40 && share(l.x) && share(l.y);
 }
 
+async function fetchBanners(job: Job, requests: Partial<Record<BannerPosition, BannerRequest>>) {
+  const banners: Partial<Record<BannerPosition, BannerImage>> = {};
+  for (const position of BANNER_POSITIONS) {
+    const request = requests[position];
+    if (!request) continue;
+    const path = join(job.dir, `banner-${position}`);
+    await download(request.url, path, "banner");
+    banners[position] = { path, height: bannerHeight(request.width, request.height) };
+  }
+  return banners;
+}
+
+/** The banners asked for, or null if any of them isn't a usable request. */
+function parseBanners(value: unknown): Partial<Record<BannerPosition, BannerRequest>> | null {
+  const requested = (value ?? {}) as Partial<Record<BannerPosition, unknown>>;
+  const banners: Partial<Record<BannerPosition, BannerRequest>> = {};
+  for (const position of BANNER_POSITIONS) {
+    const request = requested[position];
+    if (request == null) continue;
+    if (!isBannerRequest(request)) return null;
+    banners[position] = request;
+  }
+  return banners;
+}
+
+/** Registers a job with a folder of its own, and reports how `work` ends. */
+function openJob(id: string, dir: string, work: (job: Job) => Promise<void>) {
+  const job: Job = { dir, status: "working", stage: "Starting", done: 0, total: 0, parts: [], error: null };
+  jobs.set(id, job);
+  work(job)
+    .then(() => console.log(`[${id}] done: ${job.parts.length} Shorts`))
+    .catch((error) => {
+      console.error(`[${id}] failed:`, error);
+      job.status = "failed";
+      job.error = error instanceof Error ? error.message : String(error);
+    })
+    .finally(() => setTimeout(() => discard(id), KEEP_MS).unref());
+}
+
+/** Reaction videos the browser has handed over, by id. One is reused for every Short of an import. */
+const reactions = new Map<string, string>();
+const REACTION_DIR = join(tmpdir(), "shortflow-helper", "reactions");
+/** A forgotten reaction video is deleted after this long; an import of hundreds of Shorts fits well inside it. */
+const REACTION_KEEP_MS = 24 * 60 * 60 * 1000;
+
+/** What the browser sends to put a reaction video on a Short: which one, and how it sits in its strip. */
+interface ReactionRequest extends Omit<ReactionLook, "position"> {
+  id: string;
+  /** Left out by older versions of the app, which only knew the bottom. */
+  position?: ReactionLook["position"];
+}
+
+function isReactionRequest(value: unknown): value is ReactionRequest {
+  const r = value as ReactionRequest | null;
+  return (
+    typeof r === "object" && r !== null && typeof r.id === "string" && reactions.has(r.id) &&
+    typeof r.percent === "number" && r.percent >= REACTION_PERCENT_MIN && r.percent <= REACTION_PERCENT_MAX &&
+    (r.position === undefined || REACTION_POSITIONS.includes(r.position)) &&
+    REACTION_FITS.includes(r.fit) && typeof r.focus === "number" && r.focus >= 0 && r.focus <= 1
+  );
+}
+
+/** The reaction video asked for, ready to render, after checking it leaves the Short's own video enough room. */
+function prepareReaction(request: ReactionRequest | null, banners: Partial<Record<BannerPosition, BannerImage>>): ReactionVideo | null {
+  const path = request && reactions.get(request.id);
+  if (request && !path) throw new Error("The reaction video is gone. Choose it again.");
+  const reaction = request && path ? { path, height: reactionHeight(request.percent), position: request.position ?? "bottom", fit: request.fit, focus: request.focus } : null;
+  const taken = (banners.top?.height ?? 0) + (banners.bottom?.height ?? 0) + (reaction?.height ?? 0);
+  if (SHORT_HEIGHT - taken < (SHORT_HEIGHT * MAIN_VIDEO_PERCENT_MIN) / 100 - 2) throw new Error("The banners and the reaction video leave too little room for the Short itself.");
+  return reaction;
+}
+
+function discardReaction(id: string) {
+  const path = reactions.get(id);
+  if (!path) return;
+  reactions.delete(id);
+  void rm(path, { force: true });
+}
+
+/** Keeps the reaction video in the request body, and answers with the id to ask for it by. */
+async function saveReaction(req: IncomingMessage, res: ServerResponse) {
+  const id = randomUUID();
+  const path = join(REACTION_DIR, id);
+  await mkdir(REACTION_DIR, { recursive: true });
+  try {
+    await pipeline(req, createWriteStream(path));
+  } catch (error) {
+    void rm(path, { force: true });
+    throw error;
+  }
+  if (!(await probeMedia({ url: path }))) {
+    void rm(path, { force: true });
+    return send(res, 422, { error: "Not a playable video." });
+  }
+  reactions.set(id, path);
+  setTimeout(() => discardReaction(id), REACTION_KEEP_MS).unref();
+  send(res, 200, { id });
+}
+
+/** Puts banners and a reaction video on a ready-made Short already saved as the job's source. It is re-framed in the space left, not cut. */
+async function runWrap(job: Job, cropMode: CropMode, quality: OutputQuality, bannerRequests: Partial<Record<BannerPosition, BannerRequest>>, reactionRequest: ReactionRequest | null) {
+  const source = join(job.dir, "source");
+  job.total = 1;
+  job.stage = "Fetching the banners";
+  const banners = await fetchBanners(job, bannerRequests);
+  const reaction = prepareReaction(reactionRequest, banners);
+
+  const probe = await probeMedia({ url: source });
+  if (!probe) throw new Error("This file isn't a playable video.");
+
+  job.stage = "Rendering";
+  const out = join(job.dir, "1.mp4");
+  await renderShort({ url: source }, { startSec: 0, durationSec: probe.durationSec, cropMode, quality, banners, reaction, encoder: await encoderReady }, out);
+
+  const frame = await grabFrameJpeg({ url: out }, Math.min(1, probe.durationSec / 2)).catch(() => null);
+  if (frame) await pipeline(Readable.from(frame), createWriteStream(join(job.dir, "1.jpg")));
+
+  job.parts = [{ index: 0, startSec: 0, endSec: probe.durationSec, durationSec: probe.durationSec, hasThumbnail: Boolean(frame) }];
+  job.done = 1;
+  await rm(source, { force: true });
+  job.stage = "Done";
+  job.status = "done";
+}
+
 async function runJob(
   job: Job,
   sourceUrl: string,
@@ -84,25 +231,20 @@ async function runJob(
   quality: OutputQuality,
   bannerRequests: Partial<Record<BannerPosition, BannerRequest>>,
   labelRequest: LabelRequest | null,
+  tail: TailMode,
+  reactionRequest: ReactionRequest | null,
 ) {
   const labelFor = (part: number, total: number) =>
     labelRequest && { text: labelRequest.template.replaceAll("{n}", String(part)).replaceAll("{total}", String(total)), x: labelRequest.x, y: labelRequest.y };
   job.stage = "Fetching the video";
   const source = join(job.dir, "source");
   await download(sourceUrl, source, "video");
-
-  const banners: Partial<Record<BannerPosition, BannerImage>> = {};
-  for (const position of BANNER_POSITIONS) {
-    const request = bannerRequests[position];
-    if (!request) continue;
-    const path = join(job.dir, `banner-${position}`);
-    await download(request.url, path, "banner");
-    banners[position] = { path, height: bannerHeight(request.width, request.height) };
-  }
+  const banners = await fetchBanners(job, bannerRequests);
+  const reaction = prepareReaction(reactionRequest, banners);
 
   const probe = await probeMedia({ url: source });
   if (!probe) throw new Error("This file isn't a playable video.");
-  const segments = planSegments(probe.durationSec, shortDuration);
+  const segments = planSegments(probe.durationSec, shortDuration, tail);
   job.total = segments.length;
   const crop = await detectCrop({ url: source }, probe);
   if (crop) console.log(`Removing black bars: keeping ${crop.width}x${crop.height} of ${probe.width}x${probe.height}`);
@@ -118,7 +260,7 @@ async function runJob(
       const part = segment.index + 1;
       const durationSec = Math.round((segment.endSec - segment.startSec) * 100) / 100;
       const out = join(job.dir, `${part}.mp4`);
-      await renderShort({ url: source }, { startSec: segment.startSec, durationSec, cropMode, quality, banners, encoder, crop, label: labelFor(part, segments.length) }, out);
+      await renderShort({ url: source }, { startSec: segment.startSec, durationSec, cropMode, quality, banners, reaction, encoder, crop, label: labelFor(part, segments.length) }, out);
 
       const frame = await grabFrameJpeg({ url: out }, Math.min(1, durationSec / 2)).catch(() => null);
       if (frame) await pipeline(Readable.from(frame), createWriteStream(join(job.dir, `${part}.jpg`)));
@@ -153,32 +295,60 @@ function send(res: ServerResponse, status: number, body: unknown) {
 }
 
 async function startSplit(req: IncomingMessage, res: ServerResponse) {
-  const { url, shortDuration, cropMode, quality, banners, label } = await readJson(req);
+  const { url, shortDuration, cropMode, quality, banners, label, tail = "own", reaction = null } = await readJson(req);
   const validLength = typeof shortDuration === "number" && Number.isInteger(shortDuration) && shortDuration >= MIN_SHORT_SECONDS && shortDuration <= MAX_SHORT_SECONDS;
-  const requested = (banners ?? {}) as Partial<Record<BannerPosition, unknown>>;
-  const validBanners = BANNER_POSITIONS.every((position) => requested[position] == null || isBannerRequest(requested[position]));
-  if (!isAllowedSource(url) || !validLength || !validBanners || (label != null && !isLabelRequest(label)) || !CROP_MODES.includes(cropMode as CropMode) || !OUTPUT_QUALITIES.includes(quality as OutputQuality)) {
+  const bannerRequests = parseBanners(banners);
+  if (!isAllowedSource(url) || !validLength || !bannerRequests || (label != null && !isLabelRequest(label)) || (reaction !== null && !isReactionRequest(reaction)) || !TAIL_MODES.includes(tail as TailMode) || !CROP_MODES.includes(cropMode as CropMode) || !OUTPUT_QUALITIES.includes(quality as OutputQuality)) {
     console.warn("Refused a split request:", { url: String(url).slice(0, 60), shortDuration, cropMode, quality });
     return send(res, 400, { error: "Bad request." });
   }
-  const bannerRequests: Partial<Record<BannerPosition, BannerRequest>> = {};
-  for (const position of BANNER_POSITIONS) if (isBannerRequest(requested[position])) bannerRequests[position] = requested[position];
 
   const id = randomUUID();
   const dir = join(tmpdir(), "shortflow-helper", id);
   await mkdir(dir, { recursive: true });
-  const job: Job = { dir, status: "working", stage: "Starting", done: 0, total: 0, parts: [], error: null };
-  jobs.set(id, job);
   console.log(`[${id}] cutting into ${shortDuration}s Shorts (${cropMode}, ${quality})`);
+  openJob(id, dir, (job) => runJob(job, url, shortDuration, cropMode as CropMode, quality as OutputQuality, bannerRequests, isLabelRequest(label) ? label : null, tail as TailMode, isReactionRequest(reaction) ? reaction : null));
 
-  runJob(job, url, shortDuration, cropMode as CropMode, quality as OutputQuality, bannerRequests, isLabelRequest(label) ? label : null)
-    .then(() => console.log(`[${id}] done: ${job.parts.length} Shorts`))
-    .catch((error) => {
-      console.error(`[${id}] failed:`, error);
-      job.status = "failed";
-      job.error = error instanceof Error ? error.message : String(error);
-    })
-    .finally(() => setTimeout(() => discard(id), KEEP_MS).unref());
+  send(res, 200, { jobId: id });
+}
+
+/**
+ * Banners for a Short the user already has as a file. The MP4 is the request
+ * body; the framing, quality and banners ride in the query string.
+ */
+async function startWrap(req: IncomingMessage, res: ServerResponse, query: URLSearchParams) {
+  const cropMode = query.get("cropMode");
+  const quality = query.get("quality");
+  let bannerRequests: ReturnType<typeof parseBanners> = null;
+  try {
+    bannerRequests = parseBanners(JSON.parse(query.get("banners") ?? "{}"));
+  } catch {
+    // Not JSON: refused below.
+  }
+  let reaction: unknown = null;
+  try {
+    reaction = JSON.parse(query.get("reaction") ?? "null");
+  } catch {
+    reaction = undefined; // Not JSON: refused below.
+  }
+  const reactionRequest = isReactionRequest(reaction) ? reaction : null;
+  const nothingToAdd = bannerRequests !== null && Object.keys(bannerRequests).length === 0 && !reactionRequest;
+  if (!bannerRequests || (reaction !== null && !reactionRequest) || nothingToAdd || !CROP_MODES.includes(cropMode as CropMode) || !OUTPUT_QUALITIES.includes(quality as OutputQuality)) {
+    console.warn("Refused a banner request:", { cropMode, quality });
+    return send(res, 400, { error: "Bad request." });
+  }
+
+  const id = randomUUID();
+  const dir = join(tmpdir(), "shortflow-helper", id);
+  await mkdir(dir, { recursive: true });
+  try {
+    await pipeline(req, createWriteStream(join(dir, "source")));
+  } catch (error) {
+    void rm(dir, { recursive: true, force: true });
+    throw error;
+  }
+  console.log(`[${id}] adding ${reactionRequest ? "a reaction video" : "banners"} to a Short (${cropMode}, ${quality})`);
+  openJob(id, dir, (job) => runWrap(job, cropMode as CropMode, quality as OutputQuality, bannerRequests, reactionRequest));
 
   send(res, 200, { jobId: id });
 }
@@ -210,15 +380,28 @@ async function sendFile(res: ServerResponse, job: Job, name: string) {
   createReadStream(path).pipe(res);
 }
 
+/**
+ * The deployed app's addresses, comma-separated. The downloadable helper has
+ * them built in (see scripts/pack-helper.mjs); run from source, only this machine's pages are let in.
+ */
+const APP_ORIGINS = (process.env.SHORTFLOW_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean);
+
+const isAllowedOrigin = (origin: string) => /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || APP_ORIGINS.includes(origin);
+
 const server = createServer((req, res) => {
-  // Only pages served from this machine may talk to the helper.
+  // Only the app — on this machine, or at its own address — may talk to the helper. Any other website is turned away.
   const origin = req.headers.origin ?? "";
-  if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) res.setHeader("Access-Control-Allow-Origin", origin);
+  if (origin && !isAllowedOrigin(origin)) return void res.writeHead(403).end();
+  if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  // Browsers ask before letting a public page reach this PC; this says the helper expects it.
+  res.setHeader("Access-Control-Allow-Private-Network", "true");
+  res.setHeader("Access-Control-Max-Age", "600");
   if (req.method === "OPTIONS") return void res.writeHead(204).end();
 
-  const path = new URL(req.url ?? "/", "http://helper").pathname;
+  const { pathname: path, searchParams } = new URL(req.url ?? "/", "http://helper");
   const match = /^\/jobs\/([\w-]+)(?:\/(\d+\.(?:mp4|jpg)))?$/.exec(path);
   const job = match ? jobs.get(match[1]) : undefined;
 
@@ -226,7 +409,11 @@ const server = createServer((req, res) => {
     .then(() => {
       if (req.method === "GET" && path === "/health") return send(res, 200, { ok: true });
       if (req.method === "POST" && path === "/split") return startSplit(req, res);
+      if (req.method === "POST" && path === "/wrap") return startWrap(req, res, searchParams);
       if (req.method === "POST" && path === "/frame") return measureFrame(req, res);
+      if (req.method === "POST" && path === "/reactions") return saveReaction(req, res);
+      const reactionId = /^\/reactions\/([\w-]+)$/.exec(path)?.[1];
+      if (req.method === "DELETE" && reactionId) return discardReaction(reactionId), send(res, 200, { ok: true });
       if (!match || !job) return send(res, 404, { error: "Not found." });
       if (req.method === "DELETE" && !match[2]) return discard(match[1]), send(res, 200, { ok: true });
       if (req.method === "GET" && match[2]) return sendFile(res, job, match[2]);
@@ -241,6 +428,7 @@ const server = createServer((req, res) => {
 
 server.on("error", (error: NodeJS.ErrnoException) => {
   console.error(error.code === "EADDRINUSE" ? `Port ${PORT} is in use — the helper is probably already running.` : error);
-  process.exit(1);
+  // Opened by double-click, the window would vanish with the message; leave it up long enough to read.
+  setTimeout(() => process.exit(1), process.env.SHORTFLOW_ORIGINS ? 8000 : 0);
 });
 server.listen(PORT, "127.0.0.1", () => console.log(`ShortFlow PC helper ready on http://127.0.0.1:${PORT} — keep this window open while you generate Shorts.`));

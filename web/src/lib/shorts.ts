@@ -1,8 +1,26 @@
-import { doc, updateDoc } from "firebase/firestore";
+import { doc, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { getDownloadURL, ref as storageRef } from "firebase/storage";
-import { COLLECTIONS, type PrivacyStatus, type ShortDoc, type ShortStatus, type YoutubeCheckState } from "@shortflow/shared";
+import { getDownloadURL, ref as storageRef, uploadBytes, uploadBytesResumable } from "firebase/storage";
+import {
+  COLLECTIONS,
+  MAX_SHORT_SECONDS,
+  directUploadVideoId,
+  newRunId,
+  shortFileName,
+  shortIdFor,
+  storagePaths,
+  type BannerDoc,
+  type BannerPosition,
+  type PrivacyStatus,
+  type ReactionLook,
+  type SettingsDoc,
+  type ShortDoc,
+  type ShortStatus,
+  type YoutubeCheckState,
+} from "@shortflow/shared";
 import { firebase } from "./firebase/client";
+import { bannerBitmaps, wrapInBrowser } from "./browser-splitter";
+import { HelperOfflineError, addBannersLocally, pickEngine, holdReaction, releaseReaction, type HeldReaction } from "./local-splitter";
 
 /** YouTube's limits; firestore.rules enforces the first two and the tag count. */
 export const TITLE_MAX = 100;
@@ -106,7 +124,200 @@ export async function downloadShorts(shorts: Array<Pick<ShortDoc, "storagePath">
   }
 }
 
-export type ShortFilter = "all" | "ready" | "queued" | "published" | "blocked" | "failed";
+/** Must match the Short size limit in storage.rules. */
+export const MAX_SHORT_FILE_BYTES = 500 * 1024 * 1024;
+
+export interface RejectedShortFile {
+  name: string;
+  reason: string;
+}
+
+export interface ImportProgress {
+  index: number;
+  total: number;
+  /** Of the upload of file `index`, 0–100. */
+  percent: number;
+  /** The PC helper is still putting the banners or reaction video on this file; its upload hasn't started. */
+  rendering?: boolean;
+}
+
+/** The reaction video picked for a set of Shorts, and how it sits in its strip above or below each Short's own video. */
+export interface ReactionChoice extends ReactionLook {
+  file: File;
+}
+
+interface ProbedShort {
+  durationSec: number;
+  width: number;
+  height: number;
+  thumbnail: Blob | null;
+}
+
+/** Reads a video file's length and frame size in the browser, and grabs a frame for its thumbnail. */
+function probeShortFile(file: File): Promise<ProbedShort | null> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+
+    let settled = false;
+    const finish = (result: ProbedShort | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      URL.revokeObjectURL(url);
+      video.removeAttribute("src");
+      video.load();
+      resolve(result);
+    };
+    const measured = (thumbnail: Blob | null) => finish({ durationSec: video.duration, width: video.videoWidth, height: video.videoHeight, thumbnail });
+    // A file the browser can measure but not seek in still gets added, just without a thumbnail.
+    const timer = setTimeout(() => (video.videoWidth > 0 && Number.isFinite(video.duration) ? measured(null) : finish(null)), 20_000);
+
+    video.onerror = () => finish(null);
+    video.onloadedmetadata = () => {
+      if (!Number.isFinite(video.duration) || video.videoWidth === 0) return finish(null);
+      video.currentTime = Math.min(1, video.duration / 2);
+    };
+    video.onseeked = () => {
+      try {
+        const scale = Math.min(1, 540 / video.videoWidth);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(video.videoWidth * scale);
+        canvas.height = Math.round(video.videoHeight * scale);
+        canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => measured(blob), "image/jpeg", 0.8);
+      } catch {
+        measured(null);
+      }
+    };
+    video.src = url;
+  });
+}
+
+/**
+ * Adds ready-made Shorts straight from the user's files: each MP4 is saved to
+ * Storage and registered as a Short, with no cutting. They show up as "ready",
+ * like the ones cut from a video. Files that can't be Shorts come back in `rejected`.
+ * With `banners` or a `reaction` video, the PC helper puts them on each one first (framed as `settings.processing.cropMode` says).
+ */
+export async function uploadShortFiles(
+  files: File[],
+  uid: string,
+  settings: Pick<SettingsDoc, "processing" | "publishing">,
+  onProgress: (progress: ImportProgress) => void,
+  banners: Partial<Record<BannerPosition, BannerDoc>> = {},
+  reaction: ReactionChoice | null = null,
+): Promise<{ added: number; rejected: RejectedShortFile[] }> {
+  const { db, storage } = firebase();
+  const videoId = directUploadVideoId(uid);
+  const run = newRunId();
+  const rejected: RejectedShortFile[] = [];
+  let added = 0;
+  const withBanners = Boolean(banners.top || banners.bottom || reaction);
+  // Rendered by the PC helper when it is running, otherwise in this browser.
+  const engine = withBanners ? await pickEngine() : null;
+  const bitmaps = engine === "browser" ? await bannerBitmaps(banners) : null;
+  // The helper keeps the one reaction video and puts it on every file.
+  const held: HeldReaction | null = engine === "helper" && reaction ? { id: await holdReaction(reaction.file), position: reaction.position, percent: reaction.percent, fit: reaction.fit, focus: reaction.focus } : null;
+
+  for (const [index, file] of files.entries()) {
+    const report = (percent: number, rendering = false) => onProgress({ index, total: files.length, percent, rendering });
+    report(0, withBanners);
+    if (file.type !== "video/mp4" && !/\.mp4$/i.test(file.name)) {
+      rejected.push({ name: file.name, reason: "not an MP4 file" });
+      continue;
+    }
+    if (file.size === 0 || file.size > MAX_SHORT_FILE_BYTES) {
+      rejected.push({ name: file.name, reason: file.size === 0 ? "the file is empty" : "larger than 500 MB" });
+      continue;
+    }
+    const probe = await probeShortFile(file);
+    if (!probe) {
+      rejected.push({ name: file.name, reason: "your browser couldn't read this video" });
+      continue;
+    }
+    if (probe.durationSec > MAX_SHORT_SECONDS) {
+      rejected.push({ name: file.name, reason: "longer than 3 minutes, so YouTube won't treat it as a Short" });
+      continue;
+    }
+    if (probe.width > probe.height) {
+      rejected.push({ name: file.name, reason: "a wide video — Shorts must be vertical or square" });
+      continue;
+    }
+
+    let video: Blob = file;
+    let { durationSec, thumbnail } = probe;
+    if (withBanners) {
+      try {
+        const wrapped = bitmaps ? await wrapInBrowser(file, bitmaps, settings.processing, reaction) : await addBannersLocally(file, banners, settings.processing, held);
+        video = wrapped.video;
+        durationSec = wrapped.durationSec;
+        thumbnail = wrapped.thumbnail ?? thumbnail;
+      } catch (err) {
+        // Without the helper none of the remaining files can get their banners either.
+        if (err instanceof HelperOfflineError) throw err;
+        rejected.push({ name: file.name, reason: reaction ? "it couldn't be rendered with the reaction video" : "the banners couldn't be added to it" });
+        continue;
+      }
+    }
+
+    try {
+      const shortId = shortIdFor(videoId, run, index);
+      const title = file.name.replace(/\.[^.]+$/, "").replace(/[<>]/g, "").trim().slice(0, TITLE_MAX) || `Short ${index + 1}`;
+      const storagePath = storagePaths.shortVideo(uid, shortId);
+      const task = uploadBytesResumable(storageRef(storage, storagePath), video, {
+        contentType: "video/mp4",
+        cacheControl: "private, max-age=86400",
+        contentDisposition: `attachment; filename="${shortFileName(title)}"`,
+      });
+      task.on("state_changed", (snap) => report((snap.bytesTransferred / snap.totalBytes) * 100));
+      await task;
+
+      let thumbnailPath: string | null = null;
+      if (thumbnail) {
+        thumbnailPath = storagePaths.shortThumbnail(uid, shortId);
+        await uploadBytes(storageRef(storage, thumbnailPath), thumbnail, { contentType: "image/jpeg", cacheControl: "private, max-age=86400" });
+      }
+
+      // Field set must match firestore.rules.
+      await setDoc(doc(db, COLLECTIONS.shorts, shortId), {
+        userId: uid,
+        videoId,
+        segmentIndex: index,
+        startSec: 0,
+        endSec: durationSec,
+        durationSec,
+        storagePath,
+        thumbnailPath,
+        cropMode: settings.processing.cropMode,
+        status: "ready",
+        createdAt: serverTimestamp(),
+        title,
+        description: settings.publishing.defaultDescription,
+        tags: settings.publishing.defaultTags,
+        privacy: settings.publishing.defaultPrivacy,
+        categoryId: settings.publishing.categoryId,
+        publishAt: null,
+        youtubeVideoId: null,
+        publishedAt: null,
+        errorMessage: null,
+      });
+      added++;
+    } catch (err) {
+      console.error("Saving a Short failed:", err);
+      // Firebase refusing the write is a setup problem (rules not deployed), not the connection.
+      const refused = ["permission-denied", "storage/unauthorized"].includes((err as { code?: string }).code ?? "");
+      rejected.push({ name: file.name, reason: refused ? "Firebase refused to save it — the security rules need deploying (npm run deploy:rules)" : "the upload failed — check your connection and try again" });
+    }
+  }
+  if (held) releaseReaction(held.id);
+  return { added, rejected };
+}
+
+export type ShortFilter ="all" | "ready" | "queued" | "published" | "blocked" | "failed";
 
 export const SHORT_FILTER_STATUSES: Record<Exclude<ShortFilter, "all" | "blocked">, ShortStatus[]> = {
   ready: ["ready"],

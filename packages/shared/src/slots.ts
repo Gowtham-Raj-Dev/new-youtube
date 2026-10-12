@@ -13,7 +13,16 @@ export interface SlotRules {
   intervalMinutes: number;
   publishDays: readonly Weekday[];
   maxPerDay: number;
+  /**
+   * The user's own "HH:mm" times for each weekday. When set, it replaces the
+   * start-time-and-gap pattern entirely: a day goes out at exactly its listed
+   * times, and a day with none is skipped.
+   */
+  daySlots?: DayTimes;
 }
+
+/** "HH:mm" publishing times per weekday. */
+export type DayTimes = Partial<Record<Weekday, readonly string[]>>;
 
 export function slotRulesFrom(settings: Pick<SettingsDoc, "publishing" | "automation">): SlotRules {
   return {
@@ -22,6 +31,7 @@ export function slotRulesFrom(settings: Pick<SettingsDoc, "publishing" | "automa
     intervalMinutes: settings.automation.intervalMinutes,
     publishDays: settings.automation.publishDays,
     maxPerDay: settings.automation.maxPerDay,
+    daySlots: settings.automation.daySlots,
   };
 }
 
@@ -33,6 +43,23 @@ export function dailySlotMinutes(rules: Pick<SlotRules, "firstTime" | "intervalM
     slots.push(at);
   }
   return slots;
+}
+
+/** Minutes after midnight of each slot on weekday, earliest first: the day's own times if the user set them, otherwise the daily pattern. */
+export function slotMinutesOn(rules: SlotRules, weekday: Weekday): number[] {
+  if (rules.daySlots) {
+    const minutes = (rules.daySlots[weekday] ?? []).map((time) => {
+      const [hours, mins] = time.split(":").map(Number);
+      return hours * 60 + mins;
+    });
+    return [...new Set(minutes.filter((m) => Number.isFinite(m) && m >= 0 && m < 24 * 60))].sort((a, b) => a - b);
+  }
+  return rules.publishDays.includes(weekday) ? dailySlotMinutes(rules) : [];
+}
+
+/** True when at least one weekday has a slot. */
+export function hasAnySlot(rules: SlotRules): boolean {
+  return JS_WEEKDAYS.some((day) => slotMinutesOn(rules, day).length > 0);
 }
 
 interface WallTime {
@@ -80,8 +107,7 @@ const dayKey = (year: number, month: number, day: number) => `${year}-${month}-$
  * the rules leave no slots at all (no publishing days).
  */
 export function nextSlots(rules: SlotRules, count: number, afterMs: number, takenMs: readonly number[] = []): number[] {
-  const minutes = dailySlotMinutes(rules);
-  if (count <= 0 || minutes.length === 0 || rules.publishDays.length === 0) return [];
+  if (count <= 0 || !hasAnySlot(rules)) return [];
 
   const taken = new Set(takenMs);
   const usedPerDay = new Map<string, number>();
@@ -96,12 +122,15 @@ export function nextSlots(rules: SlotRules, count: number, afterMs: number, take
   for (let offset = 0; offset < 366 * 2 && slots.length < count; offset++) {
     // Calendar arithmetic only — the Date is just a (year, month, day) carrier.
     const date = new Date(Date.UTC(start.year, start.month - 1, start.day + offset));
-    if (!rules.publishDays.includes(JS_WEEKDAYS[date.getUTCDay()])) continue;
+    const minutes = slotMinutesOn(rules, JS_WEEKDAYS[date.getUTCDay()]);
+    if (minutes.length === 0) continue;
+    // A day with its own times takes exactly that many; the pattern is capped by maxPerDay.
+    const cap = rules.daySlots ? minutes.length : rules.maxPerDay;
 
     const [year, month, day] = [date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate()];
     let used = usedPerDay.get(dayKey(year, month, day)) ?? 0;
     for (const minute of minutes) {
-      if (used >= rules.maxPerDay || slots.length >= count) break;
+      if (used >= cap || slots.length >= count) break;
       const at = zonedTimeToUtc(year, month, day, minute, rules.timezone);
       if (at <= afterMs || taken.has(at)) continue;
       slots.push(at);

@@ -6,7 +6,7 @@ import ffmpegPath from "ffmpeg-static";
 import ffprobe from "@ffprobe-installer/ffprobe";
 import * as logger from "firebase-functions/logger";
 import { getStorage } from "firebase-admin/storage";
-import { SHORT_HEIGHT, SHORT_WIDTH, type CropMode, type OutputQuality } from "@shortflow/shared";
+import { SHORT_HEIGHT, SHORT_WIDTH, type CropMode, type OutputQuality, type ReactionFit, type ReactionPosition } from "@shortflow/shared";
 
 /** Where ffmpeg reads from. Always a 127.0.0.1 URL, a local path in tests. */
 export interface MediaInput {
@@ -192,6 +192,17 @@ export interface BannerImage {
   height: number;
 }
 
+/** A reaction video on disk, with the strip height `reactionHeight()` gives it. */
+export interface ReactionVideo {
+  path: string;
+  height: number;
+  /** `top`: under the top banner, above the video. `bottom`: under the video, above the bottom banner. */
+  position: ReactionPosition;
+  fit: ReactionFit;
+  /** With `fill`, which part of it is kept: 0 is its top, 1 its bottom. */
+  focus: number;
+}
+
 export interface ShortRender {
   startSec: number;
   durationSec: number;
@@ -199,6 +210,8 @@ export interface ShortRender {
   quality: OutputQuality;
   /** The video fills whatever is left between the banners. */
   banners?: { top?: BannerImage; bottom?: BannerImage };
+  /** A second video in a strip next to the top or bottom banner, looped to the Short's length and muted. The video gets the space that is left. */
+  reaction?: ReactionVideo | null;
   /** Defaults to libx264, which works everywhere. */
   encoder?: VideoEncoder;
   /** The part of the source frame that is real picture, from `detectCrop()`. */
@@ -295,19 +308,23 @@ export async function renderShort(input: MediaInput, render: ShortRender, outPat
   if (!ffmpegPath) throw new MediaToolError("ffmpeg binary not available on this platform.");
 
   const { top, bottom } = render.banners ?? {};
+  const { reaction } = render;
   const topHeight = top?.height ?? 0;
-  const videoHeight = SHORT_HEIGHT - topHeight - (bottom?.height ?? 0);
+  const bottomHeight = bottom?.height ?? 0;
+  const videoHeight = SHORT_HEIGHT - topHeight - bottomHeight - (reaction?.height ?? 0);
+  // A reaction strip at the top pushes the video down by its height.
+  const videoY = topHeight + (reaction?.position === "top" ? reaction.height : 0);
   const images: string[] = [];
   // Black bars baked into the source go first, so the picture itself is what gets framed.
   const { crop } = render;
   const cropped = crop ? `[0:v]crop=${crop.width}:${crop.height}:${crop.x}:${crop.y}[picture];` : "";
   let filter = cropped + frameFilter(crop ? "picture" : "0:v", render.cropMode, videoHeight, "framed");
   let composed = "framed";
-  if (top || bottom) {
+  if (top || bottom || reaction) {
     // Canvas with the video in its slot, then each banner scaled to fit its strip and laid over it.
-    filter += `;[framed]pad=${SHORT_WIDTH}:${SHORT_HEIGHT}:0:${topHeight}:black[base0]`;
+    filter += `;[framed]pad=${SHORT_WIDTH}:${SHORT_HEIGHT}:0:${videoY}:black[base0]`;
     composed = "base0";
-    for (const [banner, y] of [[top, 0], [bottom, SHORT_HEIGHT - (bottom?.height ?? 0)]] as const) {
+    for (const [banner, y] of [[top, 0], [bottom, SHORT_HEIGHT - bottomHeight]] as const) {
       if (!banner) continue;
       images.push("-i", banner.path);
       const n = images.length / 2;
@@ -315,6 +332,19 @@ export async function renderShort(input: MediaInput, render: ShortRender, outPat
       filter += `;[${n}:v]scale=${strip}:force_original_aspect_ratio=decrease,pad=${strip}:(ow-iw)/2:(oh-ih)/2:black[banner${n}];[${composed}][banner${n}]overlay=0:${y}[base${n}]`;
       composed = `base${n}`;
     }
+  }
+  // The reaction video plays on repeat in its strip; the output is cut at the Short's own length (`-t` below).
+  const looped: string[] = [];
+  if (reaction) {
+    looped.push("-stream_loop", "-1", "-i", reaction.path);
+    const n = images.length / 2 + 1;
+    const strip = `${SHORT_WIDTH}:${reaction.height}`;
+    const framed =
+      reaction.fit === "fit"
+        ? `scale=${strip}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bilinear,pad=${strip}:(ow-iw)/2:(oh-ih)/2:black`
+        : `scale=${strip}:force_original_aspect_ratio=increase:flags=bilinear,crop=${strip}:(iw-ow)/2:(ih-oh)*${Math.min(1, Math.max(0, reaction.focus)).toFixed(3)}`;
+    filter += `;[${n}:v]${framed},setsar=1[reaction];[${composed}][reaction]overlay=0:${reaction.position === "top" ? topHeight : SHORT_HEIGHT - bottomHeight - reaction.height}[withreaction]`;
+    composed = "withreaction";
   }
 
   // The label ("Part 3") is centred on the point the user dragged it to, kept clear of the frame's edges.
@@ -334,8 +364,9 @@ export async function renderShort(input: MediaInput, render: ShortRender, outPat
     [
       "-v", "error", "-y",
       "-ss", render.startSec.toFixed(2), "-t", render.durationSec.toFixed(2), "-i", input.url,
-      ...images,
+      ...images, ...looped,
       "-filter_complex", filter, "-map", "[v]", "-map", "0:a:0?",
+      ...(reaction ? ["-t", render.durationSec.toFixed(2)] : []),
       ...encoderArgs(render.encoder ?? "libx264", render.quality), "-r", "30",
       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
       "-movflags", "+faststart", "-f", "mp4", outPath,

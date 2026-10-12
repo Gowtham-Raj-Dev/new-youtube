@@ -8,7 +8,8 @@ import { Logo, YouTubeIcon } from "@/components/ui/brand-icons";
 import { useAuth } from "@/components/providers/auth-provider";
 import { signOut } from "@/lib/firebase/auth";
 import { cn } from "@/lib/cn";
-import { FOOTER_NAV, MAIN_NAV, isActive, type NavItem } from "./nav";
+import { isAdmin } from "@/lib/admin";
+import { ADMIN_NAV, FOOTER_NAV, MAIN_NAV, isActive, type NavItem } from "./nav";
 import { Avatar } from "./avatar";
 
 function NavLink({ item, pathname, onNavigate }: { item: NavItem; pathname: string; onNavigate?: () => void }) {
@@ -54,7 +55,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </nav>
 
       <div className="space-y-0.5 border-t border-line px-3 py-3">
-        {FOOTER_NAV.map((item) => (
+        {[...FOOTER_NAV, ...(isAdmin(user) ? ADMIN_NAV : [])].map((item) => (
           <NavLink key={item.href} item={item} pathname={pathname} onNavigate={onNavigate} />
         ))}
       </div>

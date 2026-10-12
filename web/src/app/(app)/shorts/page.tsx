@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { CalendarClock, Clapperboard, Download, ListPlus, ShieldCheck, Trash2, Upload } from "lucide-react";
-import { DEFAULT_SETTINGS, slotRulesFrom, type ShortDoc } from "@shortflow/shared";
+import { CalendarClock, Clapperboard, Download, FolderUp, ListPlus, ShieldCheck, Trash2, Upload } from "lucide-react";
+import { DEFAULT_SETTINGS, directUploadVideoId, slotRulesFrom, type ShortDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useSchedules, useSettings, useShorts, useVideos, useYoutubeConnections, type WithId } from "@/lib/firebase/hooks";
+import { useBanners, useSchedules, useSettings, useShorts, useVideos, useYoutubeConnections, type WithId } from "@/lib/firebase/hooks";
 import { describeSchedule, previewSlots, scheduleFacts } from "@/lib/schedule";
 import { canQueue, checkYouTubeStatus, deleteShorts, downloadShorts, isBlockedOnYouTube, matchesShortFilter, needsYouTubeCheck, queueShorts, type ShortFilter } from "@/lib/shorts";
+import { describeImport, useWork } from "@/lib/work/work-provider";
 import { friendlyCallableError } from "@/lib/youtube";
 import { formatInZone } from "@/lib/time";
 import { Alert } from "@/components/ui/alert";
@@ -18,6 +19,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { inputClasses } from "@/components/ui/field";
 import { ShortCard, ShortCardSkeleton } from "@/components/short/short-card";
 import { ShortEditorDialog } from "@/components/short/short-editor";
+import { ShortImportDialog, type ShortImportLook } from "@/components/short/short-import-dialog";
 import { cn } from "@/lib/cn";
 
 const FILTERS: Array<{ id: ShortFilter; label: string }> = [
@@ -33,6 +35,20 @@ const GRID = "grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4 xl:g
 
 type Banner = { tone: "success" | "error"; message: string } | null;
 
+/** videoId → the connection its Shorts publish to. Kept in this browser, per signed-in user. */
+type VideoChannels = Record<string, string>;
+const videoChannelsKey = (uid: string) => `shortflow.videoChannels.${uid}`;
+
+function readVideoChannels(uid: string | undefined): VideoChannels {
+  if (!uid || typeof window === "undefined") return {};
+  try {
+    const saved: unknown = JSON.parse(window.localStorage.getItem(videoChannelsKey(uid)) ?? "{}");
+    return saved && typeof saved === "object" ? (saved as VideoChannels) : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function GeneratedShortsPage() {
   const { user } = useAuth();
   const uid = user?.uid;
@@ -40,6 +56,7 @@ export default function GeneratedShortsPage() {
   const { data: videos } = useVideos(uid);
   const { data: settings } = useSettings(uid);
   const { data: schedules } = useSchedules(uid);
+  const { data: banners } = useBanners(uid);
   const { data: connections, loading: connectionsLoading } = useYoutubeConnections(uid);
 
   const [filter, setFilter] = useState<ShortFilter>("all");
@@ -55,13 +72,33 @@ export default function GeneratedShortsPage() {
   const rules = slotRulesFrom(settings ?? DEFAULT_SETTINGS);
   const timezone = rules.timezone;
   const connected = connections.filter((c) => c.status === "connected");
+  /** The channel picked on a video's own row. A video without one goes to the default channel in the toolbar. */
+  const [videoChannels, setVideoChannels] = useState<VideoChannels>(() => readVideoChannels(uid));
+  const channelFor = (videoId: string) => {
+    const own = videoChannels[videoId];
+    return connected.some((c) => c.id === own) ? own : channelId || connected[0]?.id || "";
+  };
+  const channelTitle = (connectionId: string) => connected.find((c) => c.id === connectionId)?.channelTitle ?? "";
+
+  function setVideoChannel(videoId: string, connectionId: string) {
+    const next = { ...videoChannels, [videoId]: connectionId };
+    setVideoChannels(next);
+    try {
+      if (uid) window.localStorage.setItem(videoChannelsKey(uid), JSON.stringify(next));
+    } catch {
+      // Storage blocked or full: the choice still holds until the page is closed.
+    }
+  }
+
+  // Shorts uploaded ready-made from the user's files belong to no video; they get a group of their own, on top.
+  const directId = uid ? directUploadVideoId(uid) : "";
 
   // Newest video first, and within a video in the order the parts play.
   const ordered = useMemo(() => {
     const videoRank = new Map(videos.map((v, i) => [v.id, i]));
-    const rank = (s: ShortDoc) => videoRank.get(s.videoId) ?? Number.MAX_SAFE_INTEGER;
+    const rank = (s: ShortDoc) => (s.videoId === directId ? -1 : (videoRank.get(s.videoId) ?? Number.MAX_SAFE_INTEGER));
     return [...shorts].sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
-  }, [shorts, videos]);
+  }, [shorts, videos, directId]);
 
   const counts = useMemo(
     () => Object.fromEntries(FILTERS.map((f) => [f.id, shorts.filter((s) => matchesShortFilter(s, f.id)).length])) as Record<ShortFilter, number>,
@@ -75,12 +112,13 @@ export default function GeneratedShortsPage() {
       if (!matchesShortFilter(short, filter)) continue;
       byVideo.set(short.videoId, [...(byVideo.get(short.videoId) ?? []), short]);
     }
-    return [...byVideo].map(([videoId, items]) => ({ videoId, title: titles.get(videoId) ?? "Deleted video", items }));
-  }, [ordered, videos, filter]);
+    return [...byVideo].map(([videoId, items]) => ({ videoId, title: videoId === directId ? "Uploaded from your files" : (titles.get(videoId) ?? "Deleted video"), items }));
+  }, [ordered, videos, filter, directId]);
 
   const picked = ordered.filter((s) => selected.has(s.id) && canQueue(s)).map((s) => s.id);
   // A video with one blocked Short is copyrighted material: its other parts are flagged and left out of "all".
-  const blockedVideos = useMemo(() => new Set(shorts.filter(isBlockedOnYouTube).map((s) => s.videoId)), [shorts]);
+  // (Files uploaded ready-made have nothing to do with each other, so one being blocked says nothing about the rest.)
+  const blockedVideos = useMemo(() => new Set(shorts.filter((s) => s.videoId !== directId && isBlockedOnYouTube(s)).map((s) => s.videoId)), [shorts, directId]);
   const atRisk = (s: ShortDoc) => canQueue(s) && blockedVideos.has(s.videoId);
   const riskyCount = ordered.filter(atRisk).length;
   const allReady = ordered.filter((s) => s.status === "ready" && !atRisk(s)).map((s) => s.id);
@@ -97,6 +135,24 @@ export default function GeneratedShortsPage() {
   const toClear = ticked.length > 0 ? ticked : ordered.filter((s) => matchesShortFilter(s, filter));
   const [clearing, setClearing] = useState<WithId<ShortDoc>[] | null>(null);
   const [clearBusy, setClearBusy] = useState(false);
+
+  const fileInput = useRef<HTMLInputElement>(null);
+  // Adding Shorts from files runs app-wide, so it carries on if the user opens another page.
+  const { importJob, startImport, dismissImport } = useWork();
+  const importing = importJob?.status === "working" ? importJob.progress : null;
+  const importingNow = importing !== null;
+  const importNotice = importJob && importJob.status !== "working" ? describeImport(importJob) : null;
+  /** Files picked but not started: the dialog is asking which banners and reaction video to put on them. */
+  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
+
+  /** Saves the picked MP4 files as Shorts, one after another, with the chosen banners and reaction video on them. */
+  function importFiles(files: File[], look: ShortImportLook) {
+    if (!uid || files.length === 0) return;
+    setBanner(null);
+    setFilter("all");
+    const base = settings ?? DEFAULT_SETTINGS;
+    startImport(files, uid, { ...base, processing: { ...base.processing, cropMode: look.cropMode } }, look.banners, look.reaction);
+  }
 
   async function clear() {
     if (!clearing) return;
@@ -182,13 +238,28 @@ export default function GeneratedShortsPage() {
   async function submit(ids: string[], now = false): Promise<boolean> {
     setBusy(true);
     setBanner(null);
+    // One call per run of Shorts bound for the same channel, in order, so slots are still handed out in the order shown.
+    const runs: Array<{ connectionId: string | undefined; ids: string[] }> = [];
+    for (const id of ids) {
+      const connectionId = connected.length > 1 ? channelFor(shorts.find((s) => s.id === id)?.videoId ?? "") : undefined;
+      const last = runs[runs.length - 1];
+      if (last && last.connectionId === connectionId) last.ids.push(id);
+      else runs.push({ connectionId, ids: [id] });
+    }
+    const result = { queued: 0, uploaded: 0, firstAt: 0, lastAt: 0 };
     try {
-      const result = await queueShorts(ids, connected.length > 1 ? channelId || connected[0].id : undefined, now, checkFirst);
+      for (const run of runs) {
+        const part = await queueShorts(run.ids, run.connectionId, now, checkFirst);
+        if (result.queued === 0) result.firstAt = part.firstAt;
+        result.lastAt = part.lastAt;
+        result.queued += part.queued;
+        result.uploaded += part.uploaded;
+      }
       setBanner({
         tone: "success",
         message: now
           ? result.uploaded === result.queued
-            ? `${result.uploaded === 1 ? "1 Short is" : `${result.uploaded} Shorts are`} on YouTube now.${checkFirst ? " Public ones are Unlisted until their copyright check, about 10 minutes from now." : ""}`
+            ? `${result.uploaded === 1 ? "1 Short is" : `${result.uploaded} Shorts are`} on YouTube now.${checkFirst ? " Public ones are Unlisted until their copyright check, then go Public on their own — 10 to 40 minutes from now." : ""}`
             : `${result.uploaded} of ${result.queued} Shorts are on YouTube. The rest couldn't go up yet and will be retried within 5 minutes — see the Queue page.`
           : result.queued === 1
             ? `Added to the queue. It goes out ${when(result.firstAt)}.`
@@ -197,7 +268,9 @@ export default function GeneratedShortsPage() {
       setSelected(new Set());
       return true;
     } catch (err) {
-      setBanner({ tone: "error", message: friendlyCallableError(err) });
+      // With several channels an earlier channel's Shorts may already be in.
+      const done = result.queued > 0 ? `${result.queued} of ${ids.length} Shorts were ${now ? "sent" : "queued"}; the rest were not. ` : "";
+      setBanner({ tone: "error", message: done + friendlyCallableError(err) });
       return false;
     } finally {
       setBusy(false);
@@ -206,56 +279,100 @@ export default function GeneratedShortsPage() {
   }
 
   const preview = confirming?.slots ?? [];
+  // With several channels the confirmation says how many Shorts each one gets — "Channel A (12), Channel B (8)".
+  const destinations = useMemo(() => {
+    if (!confirming || connected.length < 2) return "";
+    const perChannel = new Map<string, number>();
+    for (const id of confirming.ids) {
+      const connectionId = channelFor(shorts.find((s) => s.id === id)?.videoId ?? "");
+      perChannel.set(connectionId, (perChannel.get(connectionId) ?? 0) + 1);
+    }
+    return [...perChannel].map(([connectionId, count]) => `${channelTitle(connectionId)} (${count})`).join(", ");
+    // `channelFor` and `channelTitle` only read the values listed here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirming, connections, videoChannels, channelId, shorts]);
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="lg:max-w-md">
           <h2 className="text-2xl font-semibold tracking-tight">Generated Shorts</h2>
-          <p className="mt-1 text-sm text-muted">Every vertical Short cut from your videos. Open one to set its title, description and keywords, then submit it to the queue.</p>
+          <p className="mt-1 text-sm text-muted">Every vertical Short cut from your videos, or uploaded from your files. Open one to set its title, description and keywords, then submit it to the queue.</p>
         </div>
-        {shorts.length > 0 && (
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            {connected.length > 1 && (
-              <div className="w-48">
-                <select value={channelId || connected[0].id} onChange={(e) => setChannelId(e.target.value)} className={cn(inputClasses, "h-10")} aria-label="Channel to publish to">
-                  {connected.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.channelTitle}
-                    </option>
-                  ))}
-                </select>
-              </div>
+        <div className="flex shrink-0 flex-col gap-2 lg:items-end">
+          {/* Top row: bring Shorts in, clear them out, check them. Below it: send them on. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" icon={<FolderUp className="size-4" />} loading={importingNow} disabled={!uid} onClick={() => fileInput.current?.click()}>
+              {importing
+                ? importing.rendering
+                  ? `Rendering ${importing.index + 1} / ${importing.total}`
+                  : `Uploading ${importing.index + 1} / ${importing.total} · ${Math.round(importing.percent)}%`
+                : "Upload Shorts from files"}
+            </Button>
+            {shorts.length > 0 && (
+              <>
+                <Button variant="danger" icon={<Trash2 className="size-4" />} disabled={toClear.length === 0 || busy} onClick={() => setClearing(toClear)}>
+                  {ticked.length > 0 ? `Clear ${toClear.length}` : `Clear all ${toClear.length}`}
+                </Button>
+                <Button variant="secondary" icon={<ShieldCheck className="size-4" />} loading={checking} disabled={uploaded.length === 0} onClick={() => void checkUploaded(uploaded.slice(0, 50))}>
+                  Check copyright
+                </Button>
+              </>
             )}
-            <Button variant="danger" icon={<Trash2 className="size-4" />} disabled={toClear.length === 0 || busy} onClick={() => setClearing(toClear)}>
-              {ticked.length > 0 ? `Clear ${toClear.length}` : `Clear all ${toClear.length}`}
-            </Button>
-            {uploaded.length > 0 && (
-              <Button variant="secondary" icon={<ShieldCheck className="size-4" />} loading={checking} onClick={() => void checkUploaded(uploaded.slice(0, 50))}>
-                Check copyright
-              </Button>
-            )}
-            <Button variant="secondary" icon={<Download className="size-4" />} loading={downloading} disabled={toDownload.length === 0} onClick={download}>
-              {picked.length > 0 ? `Download ${toDownload.length}` : `Download all ${toDownload.length}`}
-            </Button>
-            <Button
-              variant="secondary"
-              icon={<Upload className="size-4" />}
-              disabled={busy || target.length === 0 || connected.length === 0}
-              onClick={() => setConfirming({ ids: target, slots: [], now: true })}
-            >
-              {picked.length > 0 ? `Upload ${picked.length} now` : `Upload all ${allReady.length} now`}
-            </Button>
-            <Button icon={<ListPlus className="size-4" />} loading={busy} disabled={target.length === 0 || connected.length === 0} onClick={() => askToQueue(target)}>
-              {picked.length > 0 ? `Submit ${picked.length} to queue` : `Submit all ${allReady.length} to queue`}
-            </Button>
           </div>
-        )}
+          {shorts.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              {connected.length > 1 && (
+                <label className="flex items-center gap-2 text-[12.5px] text-muted" title="Used for every video that has no channel of its own picked on its row below">
+                  Default channel
+                  <select value={channelId || connected[0].id} onChange={(e) => setChannelId(e.target.value)} className={cn(inputClasses, "h-10 !w-44")}>
+                    {connected.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.channelTitle}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <Button variant="secondary" icon={<Download className="size-4" />} loading={downloading} disabled={toDownload.length === 0} onClick={download}>
+                {picked.length > 0 ? `Download ${toDownload.length}` : `Download all ${toDownload.length}`}
+              </Button>
+              <Button
+                variant="secondary"
+                icon={<Upload className="size-4" />}
+                disabled={busy || target.length === 0 || connected.length === 0}
+                onClick={() => setConfirming({ ids: target, slots: [], now: true })}
+              >
+                {picked.length > 0 ? `Upload ${picked.length} now` : `Upload all ${allReady.length} now`}
+              </Button>
+              <Button icon={<ListPlus className="size-4" />} loading={busy} disabled={target.length === 0 || connected.length === 0} onClick={() => askToQueue(target)}>
+                {picked.length > 0 ? `Submit ${picked.length} to queue` : `Submit all ${allReady.length} to queue`}
+              </Button>
+            </div>
+          )}
+        </div>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="video/mp4,.mp4"
+          multiple
+          hidden
+          onChange={(e) => {
+            const files = [...(e.target.files ?? [])];
+            e.target.value = "";
+            if (files.length > 0) setPendingFiles(files);
+          }}
+        />
       </div>
 
       {banner && (
         <Alert tone={banner.tone} onDismiss={() => setBanner(null)}>
           {banner.message}
+        </Alert>
+      )}
+      {importNotice && (
+        <Alert tone={importNotice.tone} onDismiss={dismissImport}>
+          {importNotice.message}
         </Alert>
       )}
       {error && <Alert tone="error">We couldn&apos;t load your Shorts. Check your connection and refresh the page.</Alert>}
@@ -281,7 +398,7 @@ export default function GeneratedShortsPage() {
               Check for copyright before going public
             </span>
             <span className="text-muted">
-              A Short set to Public uploads as Unlisted first — off your channel page. About 10 minutes later ShortFlow checks whether it plays: if it does, it goes Public; if a copyright claim blocked it, it stays Unlisted and shows under “Copyright blocked” with who claimed it.
+              A Short set to Public uploads as Unlisted first — off your channel page. 10 to 40 minutes later ShortFlow checks whether it plays: if it does, it goes Public on its own — nothing for you to change; if a copyright claim blocked it, it stays Unlisted and shows under “Copyright blocked” with who claimed it.
             </span>
           </span>
         </label>
@@ -290,10 +407,18 @@ export default function GeneratedShortsPage() {
       {!connectionsLoading && connected.length === 0 && shorts.length > 0 && (
         <Card className="flex flex-col gap-3 border-warning/25 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-[13px] text-muted">
-            <span className="font-medium text-text">Connect your YouTube channel</span> before queueing — ShortFlow needs somewhere to publish to.
+            {connections.length > 0 ? (
+              <>
+                <span className="font-medium text-text">Your YouTube session expired and the channel was cut off.</span> Reconnect it before queueing or uploading.
+              </>
+            ) : (
+              <>
+                <span className="font-medium text-text">Connect your YouTube channel</span> before queueing — ShortFlow needs somewhere to publish to.
+              </>
+            )}
           </p>
           <ButtonLink href="/youtube" variant="secondary" size="sm">
-            Connect YouTube
+            {connections.length > 0 ? "Reconnect YouTube" : "Connect YouTube"}
           </ButtonLink>
         </Card>
       )}
@@ -348,7 +473,7 @@ export default function GeneratedShortsPage() {
           <EmptyState
             icon={<Clapperboard className="size-5" />}
             title="No Shorts yet"
-            description="Upload a video, press Generate Shorts on it and choose how long each Short should be."
+            description="Upload a video, press Generate Shorts on it and choose how long each Short should be — or add Shorts you already have with “Upload Shorts from files” above."
             action={
               <ButtonLink href="/videos" icon={<Upload className="size-4" />}>
                 Go to Videos
@@ -371,6 +496,24 @@ export default function GeneratedShortsPage() {
                 <h3 className="min-w-0 truncate text-[14px] font-semibold tracking-tight">
                   {group.title} <span className="font-normal text-faint">· {group.items.length}</span>
                 </h3>
+                {/* Which channel this video's Shorts go to. Only worth asking with more than one connected. */}
+                {connected.length > 1 && group.items.some(canQueue) && (
+                  <label className="ml-auto flex shrink-0 items-center gap-2 text-[12.5px] text-muted">
+                    <span className="hidden sm:inline">Publishes to</span>
+                    <select
+                      value={channelFor(group.videoId)}
+                      onChange={(e) => setVideoChannel(group.videoId, e.target.value)}
+                      className={cn(inputClasses, "h-8 !w-44 px-2.5 text-[12.5px]")}
+                      aria-label={`Channel for ${group.title}`}
+                    >
+                      {connected.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.channelTitle}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 {queueable.length > 0 && (
                   <button
                     onClick={() =>
@@ -404,6 +547,20 @@ export default function GeneratedShortsPage() {
         })
       )}
 
+      {pendingFiles && uid && (
+        <ShortImportDialog
+          files={pendingFiles}
+          uid={uid}
+          banners={banners}
+          defaultCropMode={(settings ?? DEFAULT_SETTINGS).processing.cropMode}
+          onCancel={() => setPendingFiles(null)}
+          onStart={(look) => {
+            setPendingFiles(null);
+            importFiles(pendingFiles, look);
+          }}
+        />
+      )}
+
       {open && <ShortEditorDialog key={open.id} short={open} timezone={timezone} onClose={() => setOpenId(null)} onQueue={(id) => submit([id])} />}
 
       <ConfirmDialog
@@ -432,9 +589,22 @@ export default function GeneratedShortsPage() {
         }
         description={
           confirming?.now ? (
-            "They skip your schedule and start uploading within 5 minutes, one after another, each with the title, description, keywords and visibility it has right now."
+            <>
+              They skip your schedule and start uploading within 5 minutes, one after another, each with the title, description, keywords and visibility it has right now.
+              {destinations && (
+                <>
+                  {" "}
+                  Going to: <span className="text-text">{destinations}</span>.
+                </>
+              )}
+            </>
           ) : preview.length > 0 ? (
             <>
+              {destinations && (
+                <>
+                  Going to: <span className="text-text">{destinations}</span>.{" "}
+                </>
+              )}
               One goes out per slot, {describeSchedule(rules)} ({timezone}). {preview.length === 1 ? "It goes out" : "The first goes out"} <span className="text-text">{when(preview[0])}</span>
               {preview.length > 1 && (
                 <>

@@ -136,6 +136,8 @@ export interface SettingsDoc {
     intervalMinutes: ScheduleIntervalMinutes;
     publishDays: Weekday[];
     maxPerDay: number;
+    /** The user's own "HH:mm" times for each weekday. When present it replaces the start-time-and-gap pattern. */
+    daySlots?: Partial<Record<Weekday, string[]>>;
   };
   storage: {
     deleteSourceAfterProcessing: boolean;

@@ -1,21 +1,21 @@
 "use client";
 
 import { useMemo, useState, type FormEvent } from "react";
-import { CalendarClock, Layers, RotateCcw, TriangleAlert } from "lucide-react";
+import { CalendarClock, Copy, Layers, Plus, RotateCcw, X } from "lucide-react";
 import {
   DEFAULT_SETTINGS,
-  SCHEDULE_INTERVALS_MINUTES,
   WEEKDAYS,
-  dailySlotMinutes,
+  hasAnySlot,
   nextSlots,
+  slotMinutesOn,
+  slotRulesFrom,
   type ScheduleDoc,
-  type ScheduleIntervalMinutes,
   type SlotRules,
   type Weekday,
 } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useSchedules, useSettings, type WithId } from "@/lib/firebase/hooks";
-import { WEEKDAY_LABELS, describeSchedule, rescheduleQueue, saveSettings, type EditableSettings } from "@/lib/schedule";
+import { WEEKDAY_LABELS, rescheduleQueue, saveSettings, type EditableSettings } from "@/lib/schedule";
 import { formatInZone, timezoneOptions } from "@/lib/time";
 import { Alert } from "@/components/ui/alert";
 import { Button, ButtonLink } from "@/components/ui/button";
@@ -24,54 +24,77 @@ import { Field, inputClasses } from "@/components/ui/field";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/cn";
 
-const INTERVAL_LABELS: Record<ScheduleIntervalMinutes, string> = {
-  30: "30 minutes",
-  60: "1 hour",
-  120: "2 hours",
-  240: "4 hours",
-  360: "6 hours",
-  720: "12 hours",
-  1440: "24 hours (one a day)",
-};
+/** Every weekday with a (possibly empty) sorted list of "HH:mm" times. */
+type DayTimes = Record<Weekday, string[]>;
+
+const hhmm = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+
+/** The saved times of every weekday. A schedule saved as the old start-time-and-gap pattern comes out as the times that pattern gave. */
+function savedDays(settings: EditableSettings): DayTimes {
+  const rules = slotRulesFrom(settings);
+  return Object.fromEntries(WEEKDAYS.map((day) => [day, slotMinutesOn(rules, day).map(hhmm)])) as DayTimes;
+}
+
+/** "18:30" → "6:30 pm". */
+function clock(time: string) {
+  const [hours, minutes] = time.split(":").map(Number);
+  return new Intl.DateTimeFormat("en-IN", { hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(Date.UTC(2000, 0, 1, hours, minutes));
+}
+
+/** One weekday's times: chips to remove, a time box and Add to put a new one in. */
+function DayRow({ day, times, onChange, onCopyToAll }: { day: Weekday; times: string[]; onChange: (times: string[]) => void; onCopyToAll: () => void }) {
+  const [draft, setDraft] = useState("18:00");
+  const add = () => /^([01]\d|2[0-3]):[0-5]\d$/.test(draft) && !times.includes(draft) && times.length < 24 && onChange([...times, draft].sort());
+
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface/60 p-3 sm:flex-row sm:items-center">
+      <p className="w-12 shrink-0 text-[13px] font-semibold">{WEEKDAY_LABELS[day]}</p>
+      <div className="flex min-h-8 flex-1 flex-wrap items-center gap-1.5">
+        {times.length === 0 && <span className="text-[12.5px] text-faint">No uploads this day</span>}
+        {times.map((time) => (
+          <span key={time} className="inline-flex items-center gap-1 rounded-lg bg-accent-soft py-1 pl-2.5 pr-1 text-[12.5px] tabular-nums text-text">
+            {clock(time)}
+            <button type="button" onClick={() => onChange(times.filter((t) => t !== time))} className="grid size-4 place-items-center rounded text-muted hover:bg-white/10 hover:text-text" aria-label={`Remove ${clock(time)} on ${WEEKDAY_LABELS[day]}`}>
+              <X className="size-3" />
+            </button>
+          </span>
+        ))}
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <input type="time" value={draft} onChange={(e) => setDraft(e.target.value)} aria-label={`Time to add on ${WEEKDAY_LABELS[day]}`} className={cn(inputClasses, "h-8 !w-28 px-2 text-[13px]")} />
+        <Button type="button" variant="secondary" size="sm" icon={<Plus className="size-3.5" />} onClick={add}>
+          Add
+        </Button>
+        <button type="button" onClick={onCopyToAll} disabled={times.length === 0} title="Use these times on every day" aria-label={`Copy ${WEEKDAY_LABELS[day]}'s times to every day`} className="grid size-8 place-items-center rounded-lg text-faint transition hover:bg-white/[0.06] hover:text-text disabled:opacity-40">
+          <Copy className="size-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: EditableSettings; schedules: WithId<ScheduleDoc>[] }) {
   const [timezone, setTimezone] = useState(settings.publishing.timezone);
-  const [firstTime, setFirstTime] = useState(settings.publishing.defaultUploadTime);
-  const [intervalMinutes, setIntervalMinutes] = useState(settings.automation.intervalMinutes);
-  const [maxPerDay, setMaxPerDay] = useState(settings.automation.maxPerDay);
-  const [publishDays, setPublishDays] = useState<Weekday[]>(settings.automation.publishDays);
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [now] = useState(() => Date.now());
 
   const zones = useMemo(() => timezoneOptions(settings.publishing.timezone), [settings.publishing.timezone]);
-  const rules: SlotRules = { timezone, firstTime, intervalMinutes, publishDays, maxPerDay };
-  const validTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(firstTime);
-  const validMax = Number.isInteger(maxPerDay) && maxPerDay >= 1 && maxPerDay <= 50;
-  const valid = validTime && validMax && publishDays.length > 0;
-  const dirty =
-    timezone !== settings.publishing.timezone ||
-    firstTime !== settings.publishing.defaultUploadTime ||
-    intervalMinutes !== settings.automation.intervalMinutes ||
-    maxPerDay !== settings.automation.maxPerDay ||
-    WEEKDAYS.some((d) => publishDays.includes(d) !== settings.automation.publishDays.includes(d));
+  const saved = useMemo(() => savedDays(settings), [settings]);
+  const [dayTimes, setDayTimes] = useState<DayTimes>(saved);
+  const rules: SlotRules = { ...slotRulesFrom(settings), timezone, daySlots: dayTimes };
+  const valid = hasAnySlot(rules);
+  // A schedule still stored as the old pattern counts as unsaved: saving writes it as per-day times.
+  const dirty = !settings.automation.daySlots || JSON.stringify(dayTimes) !== JSON.stringify(saved) || timezone !== settings.publishing.timezone;
 
-  const daily = valid ? dailySlotMinutes(rules) : [];
   const waiting = schedules.filter((s) => s.status === "scheduled" || s.status === "quota_exceeded").length;
   // The times videos go out under the schedule on screen, counted from now: first the ones already
   // queued (saving moves them onto these times), then the next few that get added.
   const plan = valid ? nextSlots(rules, Math.max(waiting + 2, 6), now) : [];
 
-  function toggleDay(day: Weekday) {
-    setPublishDays((days) => (days.includes(day) ? days.filter((d) => d !== day) : WEEKDAYS.filter((d) => d === day || days.includes(d))));
-  }
-
   function reset() {
     setTimezone(settings.publishing.timezone);
-    setFirstTime(settings.publishing.defaultUploadTime);
-    setIntervalMinutes(settings.automation.intervalMinutes);
-    setMaxPerDay(settings.automation.maxPerDay);
-    setPublishDays(settings.automation.publishDays);
+    setDayTimes(saved);
     setBanner(null);
   }
 
@@ -85,8 +108,8 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
       if (dirty) {
         await saveSettings(uid, {
           ...settings,
-          publishing: { ...settings.publishing, timezone, defaultUploadTime: firstTime },
-          automation: { ...settings.automation, intervalMinutes, publishDays, maxPerDay },
+          publishing: { ...settings.publishing, timezone },
+          automation: { ...settings.automation, daySlots: dayTimes },
         });
       }
       // The Shorts already waiting move to the new times too, in the same order.
@@ -116,32 +139,21 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
             </Alert>
           )}
 
-          <div className="grid gap-5 sm:grid-cols-2">
-            <Field label="First Short of the day" hint="In your timezone below.">
-              <input type="time" required value={firstTime} onChange={(e) => setFirstTime(e.target.value)} className={cn(inputClasses, "h-11")} />
-            </Field>
-            <Field label="Then one every">
-              <select value={intervalMinutes} onChange={(e) => setIntervalMinutes(Number(e.target.value) as ScheduleIntervalMinutes)} className={cn(inputClasses, "h-11")}>
-                {SCHEDULE_INTERVALS_MINUTES.map((m) => (
-                  <option key={m} value={m}>
-                    {INTERVAL_LABELS[m]}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Most Shorts in a day" hint="Between 1 and 50.">
-              <input
-                type="number"
-                min={1}
-                max={50}
-                step={1}
-                required
-                value={Number.isNaN(maxPerDay) ? "" : maxPerDay}
-                onChange={(e) => setMaxPerDay(e.target.valueAsNumber)}
-                className={cn(inputClasses, "h-11")}
+          <div className="space-y-2">
+            {WEEKDAYS.map((day) => (
+              <DayRow
+                key={day}
+                day={day}
+                times={dayTimes[day]}
+                onChange={(times) => setDayTimes({ ...dayTimes, [day]: times })}
+                onCopyToAll={() => setDayTimes(Object.fromEntries(WEEKDAYS.map((d) => [d, [...dayTimes[day]]])) as DayTimes)}
               />
-            </Field>
-            <Field label="Timezone">
+            ))}
+            <p className="text-[12px] leading-relaxed text-muted">
+              One Short goes out at each time. Uploads run at :01 and :31 past the hour, so a time like 6:10 pm goes out at 6:31 pm — times on the hour or half hour go out on the dot.
+            </p>
+            {!valid && <p className="text-[12px] text-danger">Add at least one time on at least one day.</p>}
+            <Field label="Timezone" className="max-w-xs pt-2">
               <select value={timezone} onChange={(e) => setTimezone(e.target.value)} className={cn(inputClasses, "h-11")}>
                 {zones.map((zone) => (
                   <option key={zone} value={zone}>
@@ -152,34 +164,9 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
             </Field>
           </div>
 
-          <div>
-            <p className="mb-1.5 text-[13px] font-medium">Publishing days</p>
-            <div className="flex flex-wrap gap-1.5">
-              {WEEKDAYS.map((day) => {
-                const on = publishDays.includes(day);
-                return (
-                  <button
-                    key={day}
-                    type="button"
-                    role="checkbox"
-                    aria-checked={on}
-                    onClick={() => toggleDay(day)}
-                    className={cn(
-                      "h-9 min-w-12 rounded-lg border px-3 text-[13px] font-medium transition",
-                      on ? "border-accent/50 bg-accent-soft text-text" : "border-line text-muted hover:border-line-strong hover:text-text",
-                    )}
-                  >
-                    {WEEKDAY_LABELS[day]}
-                  </button>
-                );
-              })}
-            </div>
-            {publishDays.length === 0 && <p className="mt-1.5 text-[12px] text-danger">Pick at least one day.</p>}
-          </div>
-
           <div className="flex justify-end gap-2 border-t border-line pt-5">
             {/* Throws away unsaved changes and goes back to the schedule as last saved. */}
-            <Button type="button" variant="ghost" icon={<RotateCcw className="size-4" />} disabled={!dirty || busy} onClick={reset}>
+            <Button type="button" variant="ghost" icon={<RotateCcw className="size-4" />} disabled={(JSON.stringify(dayTimes) === JSON.stringify(saved) && timezone === settings.publishing.timezone) || busy} onClick={reset}>
               Reset
             </Button>
             <Button type="submit" loading={busy} disabled={!valid || (!dirty && waiting === 0)}>
@@ -195,17 +182,16 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
           <div className="space-y-4 p-5 text-[13px]">
             {valid ? (
               <>
-                <p className="leading-relaxed text-muted">
-                  Shorts go out <span className="text-text">{describeSchedule(rules)}</span>.
-                </p>
-                {daily.length < maxPerDay && (
-                  <p className="flex gap-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 leading-relaxed text-warning">
-                    <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-                    <span>
-                      Only {daily.length} of your {maxPerDay} daily Shorts fit before midnight. Start earlier or shorten the gap to fit more.
-                    </span>
-                  </p>
-                )}
+                <ul className="space-y-1 text-muted">
+                  {WEEKDAYS.filter((day) => dayTimes[day].length > 0).map((day) => (
+                    <li key={day} className="flex gap-3">
+                      <span className="w-10 shrink-0 font-medium text-text">{WEEKDAY_LABELS[day]}</span>
+                      <span>
+                        {dayTimes[day].length} — {dayTimes[day].map(clock).join(", ")}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
                 <div>
                   <p className="mb-2 flex items-center gap-2 font-medium">
                     <CalendarClock className="size-3.5 text-accent" />
@@ -228,7 +214,7 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
                 </div>
               </>
             ) : (
-              <p className="text-muted">Fill in a start time, a daily limit and at least one day to see your slots.</p>
+              <p className="text-muted">Add a time to at least one day to see when your videos go out.</p>
             )}
           </div>
         </Card>

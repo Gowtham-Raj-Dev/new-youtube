@@ -9,7 +9,8 @@
     "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=cjs --sourcemap --outfile=lib/index.js --external:firebase-functions --external:firebase-admin --external:ffmpeg-static --external:@ffprobe-installer/ffprobe --alias:@shortflow/shared=../packages/shared/src/index.ts",
     "helper": "esbuild src/local/split-server.ts --bundle --platform=node --target=node22 --format=cjs --outfile=.local/split-server.js --log-level=warning --external:firebase-functions --external:firebase-admin --external:ffmpeg-static --external:@ffprobe-installer/ffprobe --alias:@shortflow/shared=../packages/shared/src/index.ts && node .local/split-server.js",
     "typecheck": "tsc --noEmit",
-    "deploy": "firebase deploy --only functions"
+    "deploy": "firebase deploy --only functions",
+    "pack-helper": "node scripts/pack-helper.mjs"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "^2.1.2",
@@ -20,6 +21,7 @@
   "devDependencies": {
     "@types/node": "^22.20.5",
     "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6",
     "typescript": "^5.9.3"
   }
 }

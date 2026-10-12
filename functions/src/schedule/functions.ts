@@ -1,6 +1,6 @@
 import { HttpsError, onCall } from "firebase-functions/https";
 import { FieldValue, Timestamp, getFirestore } from "firebase-admin/firestore";
-import { COLLECTIONS, DEFAULT_SETTINGS, nextSlots, slotRulesFrom, type SettingsDoc, type ShortDoc } from "@shortflow/shared";
+import { COLLECTIONS, DEFAULT_SETTINGS, hasAnySlot, nextSlots, slotRulesFrom, type SettingsDoc, type ShortDoc } from "@shortflow/shared";
 import { TOKEN_ENCRYPTION_KEY, YOUTUBE_CLIENT_SECRET } from "../config";
 import { requireUid } from "../lib/auth";
 import { logActivity } from "../lib/activity";
@@ -48,7 +48,7 @@ export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string; 
   const connectionId = await pickConnection(userId, request.data?.connectionId);
   const settings = ((await db.collection(COLLECTIONS.settings).doc(userId).get()).data() as SettingsDoc | undefined) ?? DEFAULT_SETTINGS;
   const rules = slotRulesFrom(settings);
-  if (!uploadNow && rules.publishDays.length === 0) throw new HttpsError("failed-precondition", "Pick at least one publishing day on the Schedule page first.");
+  if (!uploadNow && !hasAnySlot(rules)) throw new HttpsError("failed-precondition", "Pick at least one publishing day on the Schedule page first.");
 
   const slots = await db.runTransaction(async (tx) => {
     const snaps = await tx.getAll(...shortIds.map((id) => db.collection(COLLECTIONS.shorts).doc(id)));
@@ -119,7 +119,7 @@ export const rescheduleQueue = onCall(async (request) => {
   const db = getFirestore();
   const settings = ((await db.collection(COLLECTIONS.settings).doc(userId).get()).data() as SettingsDoc | undefined) ?? DEFAULT_SETTINGS;
   const rules = slotRulesFrom(settings);
-  if (rules.publishDays.length === 0) throw new HttpsError("failed-precondition", "Pick at least one publishing day first.");
+  if (!hasAnySlot(rules)) throw new HttpsError("failed-precondition", "Pick at least one publishing day first.");
 
   const moved = await db.runTransaction(async (tx) => {
     const mine = await tx.get(db.collection(COLLECTIONS.schedules).where("userId", "==", userId).where("status", "in", ["scheduled", "uploading", "quota_exceeded"]).orderBy("publishAt"));

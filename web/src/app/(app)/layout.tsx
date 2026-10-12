@@ -6,6 +6,7 @@ import { useAuth } from "@/components/providers/auth-provider";
 import { AppShell } from "@/components/layout/app-shell";
 import { LogoMark } from "@/components/ui/brand-icons";
 import { UploadProvider } from "@/lib/uploads/upload-provider";
+import { WorkProvider } from "@/lib/work/work-provider";
 import { UploadTray } from "@/components/video/upload-tray";
 
 export default function ProtectedLayout({ children }: { children: ReactNode }) {
@@ -29,11 +30,13 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
     );
   }
 
-  // Uploads live above the page tree so they survive navigation between pages.
+  // Uploads and the other slow jobs live above the page tree so they survive navigation between pages.
   return (
     <UploadProvider>
-      <AppShell>{children}</AppShell>
-      <UploadTray />
+      <WorkProvider>
+        <AppShell>{children}</AppShell>
+        <UploadTray />
+      </WorkProvider>
     </UploadProvider>
   );
 }

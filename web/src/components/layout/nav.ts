@@ -4,6 +4,7 @@ import {
   ChartColumn,
   Clapperboard,
   Film,
+  Gauge,
   Layers,
   LayoutDashboard,
   LifeBuoy,
@@ -34,6 +35,9 @@ export const FOOTER_NAV: NavItem[] = [
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/help", label: "Help", icon: LifeBuoy },
 ];
+
+/** Only shown to the owner of the app. */
+export const ADMIN_NAV: NavItem[] = [{ href: "/usage", label: "Usage", icon: Gauge }];
 
 /** Shown in the mobile bottom bar. */
 export const MOBILE_NAV = MAIN_NAV.filter((item) => ["/dashboard", "/videos", "/shorts", "/schedule", "/youtube"].includes(item.href));

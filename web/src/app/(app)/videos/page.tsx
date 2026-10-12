@@ -8,6 +8,7 @@ import { useAuth } from "@/components/providers/auth-provider";
 import { useBanners, useSettings, useShorts, useUserDoc, useVideos, type WithId } from "@/lib/firebase/hooks";
 import { useUploads, type RejectedFile } from "@/lib/uploads/upload-provider";
 import { matchesFilter, type VideoFilter } from "@/lib/videos";
+import { useWork } from "@/lib/work/work-provider";
 import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -31,7 +32,8 @@ export default function VideosPage() {
   const { data: shorts } = useShorts(user?.uid);
   const { data: settings } = useSettings(user?.uid);
   const { data: banners } = useBanners(user?.uid);
-  const [made, setMade] = useState<number | null>(null);
+  const { splits, dismissSplit } = useWork();
+  const finished = [...splits.values()].filter((job) => job.status !== "working");
 
   // Shorts are registered by the browser, so the count comes from the Shorts themselves.
   const videos = useMemo(() => {
@@ -88,14 +90,20 @@ export default function VideosPage() {
           </button>
         </Alert>
       ))}
-      {made !== null && (
-        <Alert tone="success" onDismiss={() => setMade(null)}>
-          {made === 1 ? "1 Short is" : `${made} Shorts are`} ready.{" "}
-          <Link href="/shorts" className="font-medium text-accent hover:underline">
-            Open the Shorts page
-          </Link>{" "}
-          to play, download, upload or schedule {made === 1 ? "it" : "them"}.
-        </Alert>
+      {finished.map((job) =>
+        job.status === "done" ? (
+          <Alert key={job.videoId} tone="success" onDismiss={() => dismissSplit(job.videoId)}>
+            <span className="font-medium">{job.title}</span> — {job.count === 1 ? "1 Short is" : `${job.count} Shorts are`} ready.{" "}
+            <Link href="/shorts" className="font-medium text-accent hover:underline">
+              Open the Shorts page
+            </Link>{" "}
+            to play, download, upload or schedule {job.count === 1 ? "it" : "them"}.
+          </Alert>
+        ) : (
+          <Alert key={job.videoId} tone="error" onDismiss={() => dismissSplit(job.videoId)}>
+            <span className="font-medium">{job.title}</span> — {job.error}
+          </Alert>
+        ),
       )}
       {error && <Alert tone="error">We couldn&apos;t load your videos. Check your connection and refresh the page.</Alert>}
 
@@ -169,10 +177,6 @@ export default function VideosPage() {
           settings={settings ?? DEFAULT_SETTINGS}
           banners={banners}
           onClose={() => setGenerating(null)}
-          onDone={(count) => {
-            setGenerating(null);
-            setMade(count);
-          }}
           onRename={() => {
             setRenaming(generating);
             setGenerating(null);

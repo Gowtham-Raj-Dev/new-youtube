@@ -104,12 +104,17 @@ async function markExpired(connectionId: string) {
   if (!snap.exists || snap.get("status") === "expired") return;
 
   const userId = snap.get("userId") as string;
+  const others = await db.collection(COLLECTIONS.youtubeConnections).where("userId", "==", userId).get();
+  const stillConnected = others.docs.some((d) => d.id !== connectionId && d.get("status") === "connected");
+
   const batch = db.batch();
   batch.update(ref, { status: "expired", updatedAt: FieldValue.serverTimestamp() });
+  // The channel counts as cut off from here on, so the app stops showing it as connected.
+  batch.set(db.collection(COLLECTIONS.users).doc(userId), { youtubeConnected: stillConnected }, { merge: true });
   notify(batch, userId, {
     kind: "error",
     title: "Reconnect YouTube",
-    body: `Access to ${snap.get("channelTitle")} expired. Reconnect so scheduled Shorts keep uploading.`,
+    body: `Access to ${snap.get("channelTitle")} expired and the channel was cut off. Nothing uploads until you reconnect — queued Shorts wait and go out late.`,
     link: "/youtube",
   });
   await batch.commit();

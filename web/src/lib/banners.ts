@@ -13,8 +13,8 @@ function imageSize(blob: Blob): Promise<{ width: number; height: number }> {
   });
 }
 
-/** Saves an image as a banner. Throws an Error with a message fit to show the user. */
-export async function addBanner(uid: string, image: Blob, position: BannerPosition, name: string) {
+/** Saves an image as a banner and returns its id. Throws an Error with a message fit to show the user. */
+export async function addBanner(uid: string, image: Blob, position: BannerPosition, name: string): Promise<string> {
   if (!(image.type in BANNER_IMAGE_TYPES)) throw new Error("Use a PNG, JPG or WebP image.");
   if (image.size > BANNER_MAX_BYTES) throw new Error("That image is over 5 MB. Use a smaller one.");
   const { width, height } = await imageSize(image);
@@ -25,6 +25,7 @@ export async function addBanner(uid: string, image: Blob, position: BannerPositi
   await uploadBytes(storageRef(storage, storagePath), image, { contentType: image.type, cacheControl: "private, max-age=86400" });
   // Field set must match firestore.rules.
   await setDoc(ref, { userId: uid, name: name.trim().slice(0, 80) || "Banner", position, storagePath, width, height, createdAt: serverTimestamp() });
+  return ref.id;
 }
 
 /**

@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { ExternalLink, Layers, ListX } from "lucide-react";
 import { DEFAULT_SETTINGS, type ScheduleDoc, type ShortDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useSchedules, useSettings, useShorts, type WithId } from "@/lib/firebase/hooks";
+import { useSchedules, useSettings, useShorts, useYoutubeConnections, type WithId } from "@/lib/firebase/hooks";
 import { unqueueShort, youtubeShortUrl } from "@/lib/shorts";
 import { friendlyCallableError } from "@/lib/youtube";
 import { formatInZone, toDate } from "@/lib/time";
@@ -21,12 +21,15 @@ function QueueRow({
   schedule,
   short,
   timezone,
+  channel,
   withDate,
   onError,
 }: {
   schedule: WithId<ScheduleDoc>;
   short: WithId<ShortDoc> | undefined;
   timezone: string;
+  /** The channel it goes to. Only passed when the user has more than one, so there is something to tell apart. */
+  channel?: string;
   /** Rows under a day heading only need the time. */
   withDate?: boolean;
   onError: (message: string) => void;
@@ -56,6 +59,7 @@ function QueueRow({
           ) : (
             at && formatInZone(at, timezone, withDate ? {} : { dateStyle: undefined })
           )}
+          {channel && <span className="text-faint"> · {channel}</span>}
         </p>
       </div>
       <ShortStatusBadge status={schedule.status} />
@@ -86,6 +90,8 @@ export default function UploadQueuePage() {
 
   const timezone = (settings ?? DEFAULT_SETTINGS).publishing.timezone;
   const shortsById = useMemo(() => new Map(shorts.map((s) => [s.id, s])), [shorts]);
+  const { data: connections } = useYoutubeConnections(uid);
+  const channelOf = (schedule: ScheduleDoc) => (connections.length > 1 ? connections.find((c) => c.id === schedule.connectionId)?.channelTitle : undefined);
 
   const dayLabel = (ms: number) => formatInZone(new Date(ms), timezone, { dateStyle: undefined, timeStyle: undefined, weekday: "long", day: "numeric", month: "long" });
   const friendlyDay = (ms: number) => {
@@ -162,7 +168,7 @@ export default function UploadQueuePage() {
                     <h3 className="border-y border-line bg-white/[0.02] px-5 py-2 text-[12px] font-medium uppercase tracking-wider text-faint">{day.label}</h3>
                     <ul className="divide-y divide-line">
                       {day.items.map((schedule) => (
-                        <QueueRow key={schedule.id} schedule={schedule} short={shortsById.get(schedule.id)} timezone={timezone} onError={setBanner} />
+                        <QueueRow key={schedule.id} schedule={schedule} short={shortsById.get(schedule.id)} timezone={timezone} channel={channelOf(schedule)} onError={setBanner} />
                       ))}
                     </ul>
                   </section>
@@ -176,7 +182,7 @@ export default function UploadQueuePage() {
               <CardHeader title="Last 7 days" description="Published Shorts, and any that couldn't be uploaded." />
               <ul className="mt-3 divide-y divide-line border-t border-line">
                 {finished.map((schedule) => (
-                  <QueueRow key={schedule.id} schedule={schedule} short={shortsById.get(schedule.id)} timezone={timezone} withDate onError={setBanner} />
+                  <QueueRow key={schedule.id} schedule={schedule} short={shortsById.get(schedule.id)} timezone={timezone} channel={channelOf(schedule)} withDate onError={setBanner} />
                 ))}
               </ul>
             </Card>
