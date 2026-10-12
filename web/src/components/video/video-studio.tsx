@@ -252,7 +252,8 @@ export function VideoStudioDialog({
 
   return (
     <Dialog title={video.title} onClose={onClose} width="max-w-4xl">
-      <form onSubmit={start} className="mt-4 grid gap-6 md:grid-cols-[auto_minmax(0,1fr)]">
+      {/* Side by side the dialog keeps one size that fits the screen: the preview stays put and only the options scroll. */}
+      <form onSubmit={start} className="mt-4 grid gap-6 md:h-[min(520px,calc(100dvh-9rem))] md:grid-cols-[auto_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)]">
         <div>
           <ShortPreview
             video={video}
@@ -267,7 +268,8 @@ export function VideoStudioDialog({
           <p className="mt-2.5 text-center text-[12px] text-faint">Preview · {formatDuration(video.durationSec)} · every Short gets this look</p>
         </div>
 
-        <div className="flex min-w-0 flex-col gap-4">
+        <div className="flex min-w-0 flex-col gap-4 md:min-h-0">
+          <div className="flex flex-col gap-4 md:min-h-0 md:flex-1 md:overflow-y-auto md:pr-2 [scrollbar-width:thin]">
           <div>
             <p className="mb-1.5 text-[13px] font-medium">Length of each Short</p>
             <div className="flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="Short length">
@@ -326,7 +328,7 @@ export function VideoStudioDialog({
           </div>
 
           {BANNER_POSITIONS.map((position) => (
-            <BannerPicker key={position} position={position} uid={video.userId} banners={banners} selected={picked[position]} onSelect={(id) => setPicked((current) => ({ ...current, [position]: id }))} />
+            <BannerPicker key={position} position={position} banners={banners} selected={picked[position]} onSelect={(id) => setPicked((current) => ({ ...current, [position]: id }))} />
           ))}
 
           <ReactionPicker setup={reaction} where="every Short" />
@@ -366,6 +368,7 @@ export function VideoStudioDialog({
           </div>
 
           {canCut && !progress && <HelperNotice />}
+          </div>
 
           {progress ? (
             <div>
@@ -405,7 +408,7 @@ export function VideoStudioDialog({
           )}
           {error && <p className="rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[13px] text-danger">{error}</p>}
 
-          <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-line pt-4">
+          <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4">
             <Button type="button" variant="ghost" size="sm" icon={<Pencil className="size-3.5" />} disabled={busy} onClick={onRename}>
               Rename
             </Button>

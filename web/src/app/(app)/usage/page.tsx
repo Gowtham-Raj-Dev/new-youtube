@@ -175,6 +175,11 @@ export default function UsagePage() {
                     <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
                       <div className={cn("h-full rounded-full", barTone(total))} style={{ width: `${Math.min(100, percent(u.storageBytes))}%` }} />
                     </div>
+                    {u.orphanFiles > 0 && (
+                      <p className="mt-1.5 text-[12px] tabular-nums text-warning">
+                        {formatBytes(u.orphanBytes)} of it ({u.orphanFiles} file{u.orphanFiles === 1 ? "" : "s"}) is leftover: Shorts or videos no longer in the app.
+                      </p>
+                    )}
                     <p className="mt-1.5 text-[12px] tabular-nums text-faint">
                       {u.files === 0 ? "No files" : `Videos ${formatBytes(u.videoBytes)} · Shorts ${formatBytes(u.shortBytes)} · ${u.files} file${u.files === 1 ? "" : "s"}`}
                     </p>

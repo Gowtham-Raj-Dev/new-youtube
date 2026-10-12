@@ -139,16 +139,18 @@ function openJob(id: string, dir: string, work: (job: Job) => Promise<void>) {
 }
 
 /** Reaction videos the browser has handed over, by id. One is reused for every Short of an import. */
-const reactions = new Map<string, string>();
+const reactions = new Map<string, { path: string; hasAudio: boolean }>();
 const REACTION_DIR = join(tmpdir(), "shortflow-helper", "reactions");
 /** A forgotten reaction video is deleted after this long; an import of hundreds of Shorts fits well inside it. */
 const REACTION_KEEP_MS = 24 * 60 * 60 * 1000;
 
 /** What the browser sends to put a reaction video on a Short: which one, and how it sits in its strip. */
-interface ReactionRequest extends Omit<ReactionLook, "position"> {
+interface ReactionRequest extends Omit<ReactionLook, "position" | "sound"> {
   id: string;
   /** Left out by older versions of the app, which only knew the bottom. */
   position?: ReactionLook["position"];
+  /** Left out by older versions of the app, which never used the reaction video's sound. */
+  sound?: boolean;
 }
 
 function isReactionRequest(value: unknown): value is ReactionRequest {
@@ -157,25 +159,26 @@ function isReactionRequest(value: unknown): value is ReactionRequest {
     typeof r === "object" && r !== null && typeof r.id === "string" && reactions.has(r.id) &&
     typeof r.percent === "number" && r.percent >= REACTION_PERCENT_MIN && r.percent <= REACTION_PERCENT_MAX &&
     (r.position === undefined || REACTION_POSITIONS.includes(r.position)) &&
+    (r.sound === undefined || typeof r.sound === "boolean") &&
     REACTION_FITS.includes(r.fit) && typeof r.focus === "number" && r.focus >= 0 && r.focus <= 1
   );
 }
 
 /** The reaction video asked for, ready to render, after checking it leaves the Short's own video enough room. */
 function prepareReaction(request: ReactionRequest | null, banners: Partial<Record<BannerPosition, BannerImage>>): ReactionVideo | null {
-  const path = request && reactions.get(request.id);
-  if (request && !path) throw new Error("The reaction video is gone. Choose it again.");
-  const reaction = request && path ? { path, height: reactionHeight(request.percent), position: request.position ?? "bottom", fit: request.fit, focus: request.focus } : null;
+  const held = request && reactions.get(request.id);
+  if (request && !held) throw new Error("The reaction video is gone. Choose it again.");
+  const reaction = request && held ? { path: held.path, sound: Boolean(request.sound) && held.hasAudio, height: reactionHeight(request.percent), position: request.position ?? "bottom", fit: request.fit, focus: request.focus } : null;
   const taken = (banners.top?.height ?? 0) + (banners.bottom?.height ?? 0) + (reaction?.height ?? 0);
   if (SHORT_HEIGHT - taken < (SHORT_HEIGHT * MAIN_VIDEO_PERCENT_MIN) / 100 - 2) throw new Error("The banners and the reaction video leave too little room for the Short itself.");
   return reaction;
 }
 
 function discardReaction(id: string) {
-  const path = reactions.get(id);
-  if (!path) return;
+  const held = reactions.get(id);
+  if (!held) return;
   reactions.delete(id);
-  void rm(path, { force: true });
+  void rm(held.path, { force: true });
 }
 
 /** Keeps the reaction video in the request body, and answers with the id to ask for it by. */
@@ -189,11 +192,12 @@ async function saveReaction(req: IncomingMessage, res: ServerResponse) {
     void rm(path, { force: true });
     throw error;
   }
-  if (!(await probeMedia({ url: path }))) {
+  const probe = await probeMedia({ url: path });
+  if (!probe) {
     void rm(path, { force: true });
     return send(res, 422, { error: "Not a playable video." });
   }
-  reactions.set(id, path);
+  reactions.set(id, { path, hasAudio: probe.hasAudio });
   setTimeout(() => discardReaction(id), REACTION_KEEP_MS).unref();
   send(res, 200, { id });
 }
@@ -211,7 +215,7 @@ async function runWrap(job: Job, cropMode: CropMode, quality: OutputQuality, ban
 
   job.stage = "Rendering";
   const out = join(job.dir, "1.mp4");
-  await renderShort({ url: source }, { startSec: 0, durationSec: probe.durationSec, cropMode, quality, banners, reaction, encoder: await encoderReady }, out);
+  await renderShort({ url: source }, { startSec: 0, durationSec: probe.durationSec, cropMode, quality, banners, reaction, sourceHasAudio: probe.hasAudio, encoder: await encoderReady }, out);
 
   const frame = await grabFrameJpeg({ url: out }, Math.min(1, probe.durationSec / 2)).catch(() => null);
   if (frame) await pipeline(Readable.from(frame), createWriteStream(join(job.dir, "1.jpg")));
@@ -260,7 +264,7 @@ async function runJob(
       const part = segment.index + 1;
       const durationSec = Math.round((segment.endSec - segment.startSec) * 100) / 100;
       const out = join(job.dir, `${part}.mp4`);
-      await renderShort({ url: source }, { startSec: segment.startSec, durationSec, cropMode, quality, banners, reaction, encoder, crop, label: labelFor(part, segments.length) }, out);
+      await renderShort({ url: source }, { startSec: segment.startSec, durationSec, cropMode, quality, banners, reaction, sourceHasAudio: probe.hasAudio, encoder, crop, label: labelFor(part, segments.length) }, out);
 
       const frame = await grabFrameJpeg({ url: out }, Math.min(1, durationSec / 2)).catch(() => null);
       if (frame) await pipeline(Readable.from(frame), createWriteStream(join(job.dir, `${part}.jpg`)));

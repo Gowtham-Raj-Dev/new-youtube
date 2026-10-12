@@ -28,6 +28,9 @@ export interface UsageRow {
   videoBytes: number;
   shortBytes: number;
   files: number;
+  /** Of the above: files of Shorts and videos that are no longer in the app, so nothing shows them or can delete them. */
+  orphanBytes: number;
+  orphanFiles: number;
   /** UTC ms. */
   lastSignInAt: number | null;
 }

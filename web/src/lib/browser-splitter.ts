@@ -44,7 +44,7 @@ export async function bannerBitmaps(chosen: ChosenBanners): Promise<BrowserRende
 }
 
 const reactionJob = (reaction: ChosenReaction): BrowserRenderJob["reaction"] =>
-  reaction && { file: reaction.file, height: reactionHeight(reaction.percent), position: reaction.position, fit: reaction.fit, focus: reaction.focus };
+  reaction && { file: reaction.file, height: reactionHeight(reaction.percent), position: reaction.position, fit: reaction.fit, focus: reaction.focus, sound: reaction.sound };
 
 /** Puts banners and a reaction video on a ready-made Short. `onProgress` gets the share done, 0–1. */
 export function wrapInBrowser(

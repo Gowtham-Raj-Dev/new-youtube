@@ -56,6 +56,7 @@ export function useReactionSetup(bannersPercent = 0, autoSave = false) {
   const [wantedPercent, setPercent] = useState(last.percent);
   const [fit, setFit] = useState<ReactionFit>(last.fit);
   const [focus, setFocus] = useState(last.focus);
+  const [sound, setSound] = useState(last.sound);
 
   useEffect(() => {
     let current = true;
@@ -69,10 +70,10 @@ export function useReactionSetup(bannersPercent = 0, autoSave = false) {
   const room = Math.floor(100 - MAIN_VIDEO_PERCENT_MIN - bannersPercent);
   const percentMax = Math.max(REACTION_PERCENT_MIN, Math.min(REACTION_PERCENT_MAX, room));
   const percent = Math.min(percentMax, Math.max(REACTION_PERCENT_MIN, wantedPercent || REACTION_PERCENT_MIN));
-  const choice: ReactionChoice | null = file && { file, position, percent, fit, focus };
+  const choice: ReactionChoice | null = file && { file, position, percent, fit, focus, sound };
 
   // The size asked for is what's kept, not the smaller one tall banners may have squeezed it to this time.
-  const remember = useCallback(() => rememberLastReaction({ id, position, percent: wantedPercent, fit, focus }), [id, position, wantedPercent, fit, focus]);
+  const remember = useCallback(() => rememberLastReaction({ id, position, percent: wantedPercent, fit, focus, sound }), [id, position, wantedPercent, fit, focus, sound]);
   useEffect(() => {
     if (autoSave) remember();
   }, [autoSave, remember]);
@@ -98,6 +99,7 @@ export function useReactionSetup(bannersPercent = 0, autoSave = false) {
     percentMax,
     fit,
     focus,
+    sound,
     /** What to hand to the renderer; null when no reaction video is chosen. */
     choice,
     /** The browser can't play the chosen file, so it is unlikely to render either. */
@@ -116,6 +118,7 @@ export function useReactionSetup(bannersPercent = 0, autoSave = false) {
     setPercent,
     setFit,
     setFocus,
+    setSound,
     markUnreadable: () => setUnreadableId(id),
     add,
     remove,
@@ -217,6 +220,20 @@ export function ReactionPicker({ setup, where, manage = true }: { setup: Reactio
           </div>
         );
       })}
+      {setup.file && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <p className="text-[13px] font-medium">Reaction video sound</p>
+          <div className="flex gap-1.5" role="radiogroup" aria-label="Reaction video sound">
+            <button type="button" role="radio" aria-checked={!setup.sound} onClick={() => setup.setSound(false)} className={chip(!setup.sound)}>
+              Off
+            </button>
+            <button type="button" role="radio" aria-checked={setup.sound} onClick={() => setup.setSound(true)} className={chip(setup.sound)}>
+              On
+            </button>
+          </div>
+          <span className="text-[12.5px] text-muted">{setup.sound ? "Heard together with the Short's own sound." : "Silent — only the Short's own sound is heard."}</span>
+        </div>
+      )}
       {setup.file ? (
         <p className="text-[12.5px] text-muted">
           The reaction video plays in a strip at the {setup.position} of {where}, {setup.percent}% tall, on repeat until the Short ends. One per Short: choosing it at the top takes it off the bottom.

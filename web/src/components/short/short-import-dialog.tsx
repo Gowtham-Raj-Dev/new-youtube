@@ -29,14 +29,12 @@ export interface ShortImportLook {
 /** Asked after the user picks MP4 files: which banners and reaction video to put on them, with a preview on the first file. */
 export function ShortImportDialog({
   files,
-  uid,
   banners,
   defaultCropMode,
   onCancel,
   onStart,
 }: {
   files: File[];
-  uid: string;
   banners: WithId<BannerDoc>[];
   defaultCropMode: CropMode;
   onCancel: () => void;
@@ -94,7 +92,7 @@ export function ShortImportDialog({
 
         <div className="flex min-w-0 flex-col gap-4">
           {BANNER_POSITIONS.map((position) => (
-            <BannerPicker key={position} position={position} uid={uid} banners={banners} selected={picked[position]} onSelect={(id) => setPicked((current) => ({ ...current, [position]: id }))} />
+            <BannerPicker key={position} position={position} banners={banners} selected={picked[position]} onSelect={(id) => setPicked((current) => ({ ...current, [position]: id }))} />
           ))}
 
           <ReactionPicker setup={reaction} where={files.length === 1 ? "the Short" : "every Short"} />
@@ -119,7 +117,7 @@ export function ShortImportDialog({
 
           <p className="text-[13px] leading-relaxed text-muted">
             {changed
-              ? `The ${added} ${withBanners || !reactionFile ? "are" : "is"} put on ${each} on this device before it is saved — by the PC helper if it is running, otherwise in this browser. Keep this tab open until it finishes.${reactionFile ? " The Short keeps its own sound; the reaction video is silent." : ""}`
+              ? `The ${added} ${withBanners || !reactionFile ? "are" : "is"} put on ${each} on this device before it is saved — by the PC helper if it is running, otherwise in this browser. Keep this tab open until it finishes.`
               : `With nothing chosen, ${files.length === 1 ? "your file is" : "your files are"} added exactly as ${files.length === 1 ? "it is" : "they are"}. Pick a banner or a reaction video above to put it on ${files.length === 1 ? "this Short" : "every one"}.`}
           </p>
 

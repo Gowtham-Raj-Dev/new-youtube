@@ -35,6 +35,8 @@ export interface ReactionLook {
   fit: ReactionFit;
   /** With `fill`, which part is kept: 0 is the top of the reaction video, 1 the bottom. */
   focus: number;
+  /** Whether the reaction video's own sound is heard, mixed in with the Short's. Off, only the Short is heard. */
+  sound: boolean;
 }
 
 /** Height in canvas pixels (always even, as H.264 needs) of a reaction strip covering `percent` of the Short. */

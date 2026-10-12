@@ -1,7 +1,7 @@
 import { HttpsError, onCall } from "firebase-functions/https";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
-import { getStorage } from "firebase-admin/storage";
+import { scanBucket } from "../lib/orphans";
 import { ADMIN_EMAIL, COLLECTIONS, type UsageReport, type UsageRow, type YoutubeConnectionDoc } from "@shortflow/shared";
 
 /**
@@ -20,7 +20,7 @@ export const adminUsage = onCall<void, Promise<UsageReport>>({ timeoutSeconds: 3
   const row = (uid: string) => {
     let existing = rows.get(uid);
     if (!existing) {
-      existing = { uid, email: null, displayName: null, photoURL: null, channels: 0, storageBytes: 0, videoBytes: 0, shortBytes: 0, files: 0, lastSignInAt: null };
+      existing = { uid, email: null, displayName: null, photoURL: null, channels: 0, storageBytes: 0, videoBytes: 0, shortBytes: 0, files: 0, orphanBytes: 0, orphanFiles: 0, lastSignInAt: null };
       rows.set(uid, existing);
     }
     return existing;
@@ -48,17 +48,18 @@ export const adminUsage = onCall<void, Promise<UsageReport>>({ timeoutSeconds: 3
   }
 
   let totalBytes = 0;
-  const [files] = await getStorage().bucket().getFiles({ autoPaginate: true });
-  for (const file of files) {
-    const bytes = Number(file.metadata.size ?? 0);
-    totalBytes += bytes;
-    const [root, uid, kind, sub] = file.name.split("/");
-    if (root !== "users" || !uid) continue;
-    const owner = row(uid);
-    owner.storageBytes += bytes;
+  for (const file of await scanBucket()) {
+    totalBytes += file.bytes;
+    if (!file.uid) continue;
+    const owner = row(file.uid);
+    owner.storageBytes += file.bytes;
     owner.files++;
-    if (kind === "videos" && sub === "original") owner.videoBytes += bytes;
-    else if (kind === "shorts" && file.name.endsWith("/video.mp4")) owner.shortBytes += bytes;
+    if (file.kind === "video") owner.videoBytes += file.bytes;
+    else if (file.kind === "short") owner.shortBytes += file.bytes;
+    if (file.orphan) {
+      owner.orphanBytes += file.bytes;
+      owner.orphanFiles++;
+    }
   }
 
   return { users: [...rows.values()].sort((a, b) => b.storageBytes - a.storageBytes), totalBytes, generatedAt: Date.now() };

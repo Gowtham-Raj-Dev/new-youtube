@@ -1,12 +1,13 @@
 import { SHORT_HEIGHT, SHORT_WIDTH, type BannerPosition, type CropMode, type OutputQuality, type ReactionLook } from "@shortflow/shared";
-import type { VideoSample, WrappedCanvas } from "mediabunny";
+import type { AudioSample, VideoSample, WrappedCanvas } from "mediabunny";
 
 /**
  * Renders a Short in the browser itself, for when the PC helper isn't running:
  * the browser's own video decoder and encoder (WebCodecs) do the work, so
  * nothing is installed and no cloud compute is used. It draws the same frame
  * the helper's FFmpeg graph does — see `renderShort()` in functions/src/lib/media.ts —
- * except that black bars baked into a source video are not detected and removed.
+ * except that black bars baked into a source video are not detected and removed,
+ * and a reaction video's sound can only be mixed into a Short that has sound of its own.
  */
 
 /** A failure with a message fit to show the user. */
@@ -22,7 +23,7 @@ export interface BrowserRenderJob {
   /** Each banner at the canvas height `bannerHeight()` gives it. */
   banners: Partial<Record<BannerPosition, { image: ImageBitmap; height: number }>>;
   /** Played on repeat in a strip above or below the Short's own video, `height` canvas pixels tall. */
-  reaction: (Pick<ReactionLook, "position" | "fit" | "focus"> & { file: Blob; height: number }) | null;
+  reaction: (Pick<ReactionLook, "position" | "fit" | "focus" | "sound"> & { file: Blob; height: number }) | null;
   /** Text centred on (`x`, `y`), each a 0–1 share of the frame. */
   label: { text: string; x: number; y: number } | null;
 }
@@ -47,6 +48,8 @@ export function canRenderInBrowser(): Promise<boolean> {
       const { canEncodeVideo } = await import("mediabunny");
       return await canEncodeVideo("avc", { width: SHORT_WIDTH, height: SHORT_HEIGHT });
     } catch {
+      // The check itself failed (the encoder's code didn't load, say), which says nothing about the browser: ask again next time.
+      supported = null;
       return false;
     }
   })();
@@ -94,6 +97,8 @@ async function openReaction(file: Blob) {
   return {
     width: track.displayWidth,
     height: track.displayHeight,
+    /** Seconds one pass of the reaction video lasts. */
+    period: duration - start,
     async frameAt(sec: number): Promise<HTMLCanvasElement | OffscreenCanvas | null> {
       const at = start + (sec % (duration - start));
       if (!current || at < current.timestamp) {
@@ -118,12 +123,76 @@ async function openReaction(file: Blob) {
   };
 }
 
-/** Renders one Short. `onProgress` gets the share done, 0–1. Throws BrowserRenderError with a message for the user. */
+/**
+ * Mixes the reaction video's sound into the Short's own, looping it in step with
+ * its picture (every `period` seconds). Null when the reaction video has no sound.
+ */
+async function openReactionSound(file: Blob, period: number, Sample: typeof AudioSample) {
+  const bytes = await file.arrayBuffer();
+  // Decoded once per sample rate asked for, so it lines up with the Short's sound sample for sample.
+  const decoded = new Map<number, Promise<AudioBuffer | null>>();
+  const soundAt = (rate: number) => {
+    let pending = decoded.get(rate);
+    if (!pending) {
+      pending = new OfflineAudioContext(2, 1, rate).decodeAudioData(bytes.slice(0)).catch(() => null);
+      decoded.set(rate, pending);
+    }
+    return pending;
+  };
+  if (!(await soundAt(48000))) return null;
+
+  return async (sample: AudioSample): Promise<AudioSample> => {
+    const { sampleRate, numberOfFrames: frames, numberOfChannels: channels } = sample;
+    const data = new Float32Array(frames * channels);
+    for (let c = 0; c < channels; c++) sample.copyTo(data.subarray(c * frames, (c + 1) * frames), { planeIndex: c, format: "f32-planar" });
+    const sound = await soundAt(sampleRate);
+    if (sound) {
+      const loop = Math.max(1, Math.round(period * sampleRate));
+      const first = Math.round(Math.max(0, sample.timestamp) * sampleRate);
+      for (let c = 0; c < channels; c++) {
+        const from = sound.getChannelData(Math.min(c, sound.numberOfChannels - 1));
+        const to = data.subarray(c * frames, (c + 1) * frames);
+        for (let i = 0; i < frames; i++) {
+          const at = (first + i) % loop;
+          // Past the end of its sound but before its picture loops: silence. Summed loud passages are held inside full scale.
+          if (at < from.length) to[i] = Math.max(-1, Math.min(1, to[i] + from[at]));
+        }
+      }
+    }
+    return new Sample({ data, format: "f32-planar", numberOfChannels: channels, sampleRate, timestamp: sample.timestamp });
+  };
+}
+
+/**
+ * Renders one Short. `onProgress` gets the share done, 0–1. Throws BrowserRenderError with a message for the user.
+ * The graphics card's encoder gives up now and then (busy, or out of sessions), so a render that
+ * breaks is run once more on the browser's own, slower encoder before it counts as failed.
+ */
 export async function renderInBrowser(job: BrowserRenderJob, onProgress?: (share: number) => void): Promise<BrowserRenderResult> {
-  const { ALL_FORMATS, BlobSource, BufferTarget, Conversion, Input, Mp4OutputFormat, Output, QUALITY_HIGH, QUALITY_MEDIUM, QUALITY_VERY_HIGH, UrlSource } = await import("mediabunny");
+  try {
+    return await renderOnce(job, false, onProgress);
+  } catch (error) {
+    if (error instanceof BrowserRenderError) throw error;
+    console.warn("Browser render failed, trying again on the software encoder:", error);
+  }
+  try {
+    return await renderOnce(job, true, onProgress);
+  } catch (error) {
+    if (error instanceof BrowserRenderError) throw error;
+    console.error("Browser render failed:", error);
+    // The browser's own name for what went wrong, so a report of this message says where to look.
+    const reason = error instanceof Error && error.name !== "Error" ? ` (${error.name})` : "";
+    throw new BrowserRenderError(`The Short couldn't be rendered in this browser${reason}. Try again, close other tabs that play video, or use the PC helper.`);
+  }
+}
+
+/** One attempt. `software` asks for the browser's own encoder instead of the graphics card's. Failures other than BrowserRenderError may be worth another go. */
+async function renderOnce(job: BrowserRenderJob, software: boolean, onProgress?: (share: number) => void): Promise<BrowserRenderResult> {
+  const { ALL_FORMATS, AudioSample: Sample, BlobSource, BufferTarget, Conversion, Input, Mp4OutputFormat, Output, QUALITY_HIGH, QUALITY_MEDIUM, QUALITY_VERY_HIGH, UrlSource } = await import("mediabunny");
 
   const input = new Input({ source: typeof job.source === "string" ? new UrlSource(job.source) : new BlobSource(job.source), formats: ALL_FORMATS });
   const reaction = job.reaction ? await openReaction(job.reaction.file) : null;
+  const mixSound = reaction && job.reaction?.sound ? await openReactionSound(job.reaction.file, reaction.period, Sample) : null;
   try {
     const track = await input.getPrimaryVideoTrack().catch(() => null);
     if (!track) throw new BrowserRenderError("This file isn't a video your browser can read.");
@@ -230,6 +299,7 @@ export async function renderInBrowser(job: BrowserRenderJob, onProgress?: (share
         frameRate: 30,
         quality: job.quality === "max" ? QUALITY_VERY_HIGH : job.quality === "high" ? QUALITY_HIGH : QUALITY_MEDIUM,
         forceTranscode: true,
+        hardwareAcceleration: software ? "prefer-software" : "no-preference",
         // Phone footage carries a rotation flag; it has to be turned for real before it is drawn on.
         allowTransformationMetadata: false,
         processedWidth: SHORT_WIDTH,
@@ -245,6 +315,8 @@ export async function renderInBrowser(job: BrowserRenderJob, onProgress?: (share
           return canvas;
         },
       },
+      // Only touched when there is reaction sound to add; otherwise the Short's sound is passed through as it is.
+      audio: mixSound ? { forceTranscode: true, process: mixSound } : undefined,
       showWarnings: false,
     });
 
@@ -257,15 +329,17 @@ export async function renderInBrowser(job: BrowserRenderJob, onProgress?: (share
     }
 
     conversion.onProgress = (progress) => onProgress?.(progress);
-    await conversion.execute();
+    try {
+      await conversion.execute();
+    } catch (error) {
+      // Lets go of the decoder and encoder now; left open they count against the next render.
+      await conversion.cancel().catch(() => undefined);
+      throw error;
+    }
 
     const buffer = output.target.buffer;
     if (!buffer) throw new BrowserRenderError("The Short couldn't be rendered in this browser.");
     return { video: new Blob([buffer], { type: "video/mp4" }), thumbnail, durationSec: Math.round(length * 100) / 100 };
-  } catch (error) {
-    if (error instanceof BrowserRenderError) throw error;
-    console.error("Browser render failed:", error);
-    throw new BrowserRenderError("The Short couldn't be rendered in this browser. Try Chrome or Edge on a computer, or use the PC helper.");
   } finally {
     await reaction?.close().catch(() => undefined);
     input.dispose();

@@ -221,7 +221,7 @@ export async function uploadShortFiles(
   const engine = withBanners ? await pickEngine() : null;
   const bitmaps = engine === "browser" ? await bannerBitmaps(banners) : null;
   // The helper keeps the one reaction video and puts it on every file.
-  const held: HeldReaction | null = engine === "helper" && reaction ? { id: await holdReaction(reaction.file), position: reaction.position, percent: reaction.percent, fit: reaction.fit, focus: reaction.focus } : null;
+  const held: HeldReaction | null = engine === "helper" && reaction ? { id: await holdReaction(reaction.file), position: reaction.position, percent: reaction.percent, fit: reaction.fit, focus: reaction.focus, sound: reaction.sound } : null;
 
   for (const [index, file] of files.entries()) {
     const report = (percent: number, rendering = false) => onProgress({ index, total: files.length, percent, rendering });

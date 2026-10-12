@@ -3,6 +3,7 @@
 import { ArrowRight, CalendarClock, Film, Upload } from "lucide-react";
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
+import { useChannels } from "@/components/providers/channel-provider";
 import { useSchedules, useSettings, useShorts, useUserDoc, useVideos } from "@/lib/firebase/hooks";
 import { useUploads } from "@/lib/uploads/upload-provider";
 import { VideoCard, VideoCardSkeleton } from "@/components/video/video-card";
@@ -83,10 +84,12 @@ function RecentVideos({ uid, timezone }: { uid: string; timezone: string }) {
 
 function UpcomingSchedule({ uid }: { uid: string }) {
   const { data: schedules, loading } = useSchedules(uid);
+  const { active, multi } = useChannels();
   const { data: shorts } = useShorts(uid);
   const { data: settings } = useSettings(uid);
   const timezone = (settings ?? DEFAULT_SETTINGS).publishing.timezone;
-  const waiting = schedules.filter((s) => s.status === "scheduled" || s.status === "uploading" || s.status === "quota_exceeded");
+  // With several channels, only what is going out on the one picked in the top bar.
+  const waiting = schedules.filter((s) => (!multi || s.connectionId === active?.id) && (s.status === "scheduled" || s.status === "uploading" || s.status === "quota_exceeded"));
   const next = waiting.slice(0, 4);
 
   return (
@@ -144,7 +147,10 @@ function UpcomingSchedule({ uid }: { uid: string }) {
 export default function DashboardPage() {
   const { user } = useAuth();
   const { data: profile, loading: profileLoading } = useUserDoc(user?.uid);
-  const { counts } = useDashboardCounts(user?.uid);
+  const { counts: totals } = useDashboardCounts(user?.uid);
+  // The totals cover every channel. With several connected, Scheduled and Published are counted for the one in the top bar.
+  const { active, multi, sent } = useChannels();
+  const counts = totals && multi ? { ...totals, scheduled: sent.filter((s) => s.status === "scheduled").length, published: sent.filter((s) => s.status === "published").length } : totals;
   const timezone = profile?.timezone ?? DEFAULT_TIMEZONE;
   const firstName = (profile?.displayName ?? user?.displayName ?? "").split(" ")[0] || "there";
 
@@ -158,7 +164,15 @@ export default function DashboardPage() {
             {greetingFor(timezone)}, {firstName}
           </h2>
         )}
-        <p className="mt-1.5 text-sm text-muted">Manage your videos, Shorts and automated YouTube publishing from one place.</p>
+        <p className="mt-1.5 text-sm text-muted">
+          Manage your videos, Shorts and automated YouTube publishing from one place.
+          {multi && active && (
+            <>
+              {" "}
+              You are on <span className="font-medium text-text">{active.channelTitle}</span> — switch channel in the top bar.
+            </>
+          )}
+        </p>
       </div>
 
       {!profileLoading && !profile?.youtubeConnected && <ConnectYouTubeBanner />}

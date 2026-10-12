@@ -3,6 +3,7 @@
 import { useEffect, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
+import { ChannelProvider } from "@/components/providers/channel-provider";
 import { AppShell } from "@/components/layout/app-shell";
 import { LogoMark } from "@/components/ui/brand-icons";
 import { UploadProvider } from "@/lib/uploads/upload-provider";
@@ -34,8 +35,10 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
   return (
     <UploadProvider>
       <WorkProvider>
-        <AppShell>{children}</AppShell>
-        <UploadTray />
+        <ChannelProvider>
+          <AppShell>{children}</AppShell>
+          <UploadTray />
+        </ChannelProvider>
       </WorkProvider>
     </UploadProvider>
   );

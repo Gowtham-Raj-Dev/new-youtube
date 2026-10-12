@@ -65,7 +65,7 @@ export interface LastReaction extends ReactionLook {
 }
 
 export function readLastReaction(): LastReaction {
-  const fallback: LastReaction = { id: null, position: "bottom", percent: REACTION_PERCENT_DEFAULT, fit: "fill", focus: 0.5 };
+  const fallback: LastReaction = { id: null, position: "bottom", percent: REACTION_PERCENT_DEFAULT, fit: "fill", focus: 0.5, sound: true };
   try {
     const last = JSON.parse(localStorage.getItem(LAST_KEY) ?? "null") as Partial<LastReaction> | null;
     if (!last) return fallback;
@@ -75,6 +75,7 @@ export function readLastReaction(): LastReaction {
       percent: typeof last.percent === "number" ? last.percent : fallback.percent,
       fit: REACTION_FITS.includes(last.fit as LastReaction["fit"]) ? (last.fit as LastReaction["fit"]) : fallback.fit,
       focus: typeof last.focus === "number" && last.focus >= 0 && last.focus <= 1 ? last.focus : fallback.focus,
+      sound: typeof last.sound === "boolean" ? last.sound : fallback.sound,
     };
   } catch {
     return fallback;

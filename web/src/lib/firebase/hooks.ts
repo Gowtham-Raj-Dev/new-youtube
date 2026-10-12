@@ -104,6 +104,13 @@ export function useSchedules(uid: string | undefined, count = 300) {
   );
 }
 
+/** Every queue entry the user ever made, any age: which channel each Short was queued or published to. */
+export function useAllSchedules(uid: string | undefined, count = 2000) {
+  return useLiveQuery<ScheduleDoc>(uid ? `schedules-all:${uid}:${count}` : null, () =>
+    query(collection(firebase().db, COLLECTIONS.schedules), where("userId", "==", uid), limit(count)),
+  );
+}
+
 /** The user's banner images, newest first (sorted here to avoid needing a composite index). */
 export function useBanners(uid: string | undefined) {
   const state = useLiveQuery<BannerDoc>(uid ? `banners:${uid}` : null, () => query(collection(firebase().db, COLLECTIONS.banners), where("userId", "==", uid)));

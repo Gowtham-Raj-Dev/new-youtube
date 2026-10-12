@@ -201,6 +201,8 @@ export interface ReactionVideo {
   fit: ReactionFit;
   /** With `fill`, which part of it is kept: 0 is its top, 1 its bottom. */
   focus: number;
+  /** Mix its sound in with the Short's. Only set when the file really has sound. */
+  sound?: boolean;
 }
 
 export interface ShortRender {
@@ -210,8 +212,10 @@ export interface ShortRender {
   quality: OutputQuality;
   /** The video fills whatever is left between the banners. */
   banners?: { top?: BannerImage; bottom?: BannerImage };
-  /** A second video in a strip next to the top or bottom banner, looped to the Short's length and muted. The video gets the space that is left. */
+  /** A second video in a strip next to the top or bottom banner, looped to the Short's length. The video gets the space that is left. */
   reaction?: ReactionVideo | null;
+  /** Whether the source has sound of its own. Must be given when the reaction video's sound is wanted, to know what to mix. */
+  sourceHasAudio?: boolean;
   /** Defaults to libx264, which works everywhere. */
   encoder?: VideoEncoder;
   /** The part of the source frame that is real picture, from `detectCrop()`. */
@@ -335,6 +339,7 @@ export async function renderShort(input: MediaInput, render: ShortRender, outPat
   }
   // The reaction video plays on repeat in its strip; the output is cut at the Short's own length (`-t` below).
   const looped: string[] = [];
+  let audio = ["-map", "0:a:0?"];
   if (reaction) {
     looped.push("-stream_loop", "-1", "-i", reaction.path);
     const n = images.length / 2 + 1;
@@ -345,6 +350,15 @@ export async function renderShort(input: MediaInput, render: ShortRender, outPat
         : `scale=${strip}:force_original_aspect_ratio=increase:flags=bilinear,crop=${strip}:(iw-ow)/2:(ih-oh)*${Math.min(1, Math.max(0, reaction.focus)).toFixed(3)}`;
     filter += `;[${n}:v]${framed},setsar=1[reaction];[${composed}][reaction]overlay=0:${reaction.position === "top" ? topHeight : SHORT_HEIGHT - bottomHeight - reaction.height}[withreaction]`;
     composed = "withreaction";
+    if (reaction.sound) {
+      // Its sound loops with its picture. Mixed at full level under a limiter, so two loud tracks can't clip.
+      if (render.sourceHasAudio) {
+        filter += `;[0:a:0][${n}:a:0]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=false[a]`;
+        audio = ["-map", "[a]"];
+      } else {
+        audio = ["-map", `${n}:a:0`];
+      }
+    }
   }
 
   // The label ("Part 3") is centred on the point the user dragged it to, kept clear of the frame's edges.
@@ -365,7 +379,7 @@ export async function renderShort(input: MediaInput, render: ShortRender, outPat
       "-v", "error", "-y",
       "-ss", render.startSec.toFixed(2), "-t", render.durationSec.toFixed(2), "-i", input.url,
       ...images, ...looped,
-      "-filter_complex", filter, "-map", "[v]", "-map", "0:a:0?",
+      "-filter_complex", filter, "-map", "[v]", ...audio,
       ...(reaction ? ["-t", render.durationSec.toFixed(2)] : []),
       ...encoderArgs(render.encoder ?? "libx264", render.quality), "-r", "30",
       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",

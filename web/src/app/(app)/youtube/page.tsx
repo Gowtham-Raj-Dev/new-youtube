@@ -123,7 +123,7 @@ export default function YouTubePage() {
           ))}
           <p className="px-1 text-[12.5px] leading-relaxed text-muted">
             Several channels under one Google account? Press <span className="text-text">Connect another channel</span> once for each: choose the same Google account, then a different channel on
-            Google&apos;s &ldquo;Choose an account or a brand account&rdquo; screen. On the Shorts page you then pick which channel each video&apos;s Shorts go to. Need a new one first?{" "}
+            Google&apos;s &ldquo;Choose an account or a brand account&rdquo; screen. Then switch between them in the top bar: Shorts you queue go to the channel shown there. Need a new one first?{" "}
             <span className="text-text">Create a new channel on YouTube</span> opens YouTube, where &ldquo;Create a channel&rdquo; adds one under the Google account you&apos;re signed in to there — then come back and
             connect it.
           </p>
