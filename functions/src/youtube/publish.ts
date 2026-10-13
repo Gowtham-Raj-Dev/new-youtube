@@ -390,7 +390,9 @@ async function releaseCheckedShorts(run: Run) {
 export const publishDueShorts = onSchedule(
   {
     // Twice an hour, a minute after the :00 and :30 that publishing slots fall on, to keep the bill at next to nothing.
-    schedule: "1,31 * * * *",
+    // Only from 5 AM to 8:31 PM India time: nothing runs overnight, so a Short due then goes out at 5:01 AM.
+    schedule: "1,31 5-20 * * *",
+    timeZone: "Asia/Kolkata",
     region: STORAGE_REGION,
     secrets: [YOUTUBE_CLIENT_SECRET, TOKEN_ENCRYPTION_KEY],
     memory: "512MiB",
