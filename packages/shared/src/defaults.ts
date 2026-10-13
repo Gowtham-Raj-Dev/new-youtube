@@ -8,8 +8,8 @@ export const BRAND = {
 
 export const DEFAULT_TIMEZONE = "Asia/Kolkata";
 
-/** The one account that may open the Usage page (every user's channels and storage). The server checks it too. */
-export const ADMIN_EMAIL = "gowthamraje1221@gmail.com";
+/** The accounts that may open the Usage page (every user's channels and storage). The server checks them too. */
+export const ADMIN_EMAILS: readonly string[] = ["gowthamraje1221@gmail.com", "codelove.in@gmail.com", "yyeswanth31@gmail.com"];
 
 /** Storage the Firebase free plan includes, shared by every user of the app. */
 export const FREE_STORAGE_BYTES = 5 * 1024 ** 3;

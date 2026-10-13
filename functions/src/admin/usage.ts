@@ -3,7 +3,7 @@ import * as logger from "firebase-functions/logger";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 import { removeLeftovers, scanBucket } from "../lib/orphans";
-import { ADMIN_EMAIL, COLLECTIONS, type UsageReport, type UsageRow, type YoutubeConnectionDoc } from "@shortflow/shared";
+import { ADMIN_EMAILS, COLLECTIONS, type UsageReport, type UsageRow, type YoutubeConnectionDoc } from "@shortflow/shared";
 
 /** A Short's file lands seconds before its doc; anything this old without one was never registered. */
 const LEFTOVER_MIN_AGE_MS = 10 * 60 * 1000;
@@ -11,8 +11,8 @@ const LEFTOVER_MIN_AGE_MS = 10 * 60 * 1000;
 function requireOwner(request: CallableRequest<unknown>) {
   const token = request.auth?.token;
   // An unverified address proves nothing: anyone can sign up with a password under any email.
-  if (!token || token.email !== ADMIN_EMAIL || token.email_verified !== true) {
-    throw new HttpsError("permission-denied", "This page is only for the owner of the app.");
+  if (!token?.email || !ADMIN_EMAILS.includes(token.email) || token.email_verified !== true) {
+    throw new HttpsError("permission-denied", "This page is only for the owners of the app.");
   }
 }
 

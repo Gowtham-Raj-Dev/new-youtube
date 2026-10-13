@@ -209,7 +209,8 @@ export function ShortEditorDialog({
 
           {error && <p className="rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[13px] text-danger">{error}</p>}
 
-          <div>
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
             <p className="mb-1.5 text-[13px] font-medium">Visibility</p>
             <div className="inline-flex gap-1 rounded-xl border border-line bg-surface p-1" role="radiogroup" aria-label="Visibility">
               {PRIVACY_STATUSES.map((p) => (
@@ -229,14 +230,16 @@ export function ShortEditorDialog({
                 </button>
               ))}
             </div>
-          </div>
-
-          <div className="mt-auto flex flex-wrap items-center justify-end gap-2 border-t border-line pt-4">
+            </div>
             {short.status !== "uploading" && (
-              <Button type="button" variant="ghost" size="sm" icon={<Trash2 className="size-3.5" />} disabled={busy !== null} onClick={onDelete} className="mr-auto hover:text-danger">
+              <Button type="button" variant="ghost" size="sm" icon={<Trash2 className="size-3.5" />} disabled={busy !== null} onClick={onDelete} className="hover:text-danger">
                 Delete
               </Button>
             )}
+          </div>
+
+          {(editable || inQueue || canQueue(short)) && (
+          <div className="mt-auto flex flex-wrap items-center justify-end gap-2 border-t border-line pt-4">
             {saved && !dirty && <span className="text-[13px] text-success">Saved</span>}
             {inQueue && (
               <Button type="button" variant="secondary" icon={<ListX className="size-4" />} loading={busy === "unqueue"} disabled={busy !== null} onClick={removeFromQueue}>
@@ -254,6 +257,7 @@ export function ShortEditorDialog({
               </Button>
             )}
           </div>
+          )}
         </div>
       </form>
     </Dialog>
