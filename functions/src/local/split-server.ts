@@ -33,6 +33,7 @@ import {
   type Segment,
   type TailMode,
 } from "@shortflow/shared";
+import { InstagramError, clearSession, hasSession, listProfile, loginState, pipeInstagramFile, rememberAdded, saveSession, startLogin } from "./instagram";
 import { detectCrop, detectEncoder, grabFrameJpeg, probeMedia, renderShort, type BannerImage, type CropRect, type ReactionVideo } from "../lib/media";
 
 /** SHORTFLOW_PORT is for trying a second helper beside a running one; the app always looks on 4777. */
@@ -384,6 +385,28 @@ async function sendFile(res: ServerResponse, job: Job, name: string) {
   createReadStream(path).pipe(res);
 }
 
+/** Instagram: the saved session, a profile's videos, and their files. What goes wrong is answered in words the app shows as they are. */
+async function instagram(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams) {
+  try {
+    if (path === "/instagram/session" && req.method === "GET") return send(res, 200, { saved: await hasSession() });
+    if (path === "/instagram/session" && req.method === "POST") return await saveSession((await readJson(req)).sessionId), send(res, 200, { saved: true });
+    if (path === "/instagram/session" && req.method === "DELETE") return await clearSession(), send(res, 200, { saved: false });
+    if (path === "/instagram/login" && req.method === "GET") return send(res, 200, loginState());
+    if (path === "/instagram/login" && req.method === "POST") return send(res, 200, startLogin());
+    // Listing is a POST so that only the app can ask: a page elsewhere can't send one here without naming itself.
+    if (path === "/instagram/profile" && req.method === "POST") {
+      const { profile, cursor } = await readJson(req);
+      return send(res, 200, await listProfile(profile, cursor));
+    }
+    if (path === "/instagram/added" && req.method === "POST") return await rememberAdded((await readJson(req)).ids), send(res, 200, { ok: true });
+    if (path === "/instagram/file" && req.method === "GET") return await pipeInstagramFile(query.get("url"), res);
+    return send(res, 404, { error: "Not found." });
+  } catch (error) {
+    if (!(error instanceof InstagramError)) throw error;
+    if (!res.headersSent) send(res, error.status, { error: error.message });
+  }
+}
+
 /**
  * The deployed app's addresses, comma-separated. The downloadable helper has
  * them built in (see scripts/pack-helper.mjs); run from source, only this machine's pages are let in.
@@ -416,6 +439,7 @@ const server = createServer((req, res) => {
       if (req.method === "POST" && path === "/wrap") return startWrap(req, res, searchParams);
       if (req.method === "POST" && path === "/frame") return measureFrame(req, res);
       if (req.method === "POST" && path === "/reactions") return saveReaction(req, res);
+      if (path.startsWith("/instagram/")) return instagram(req, res, path, searchParams);
       const reactionId = /^\/reactions\/([\w-]+)$/.exec(path)?.[1];
       if (req.method === "DELETE" && reactionId) return discardReaction(reactionId), send(res, 200, { ok: true });
       if (!match || !job) return send(res, 404, { error: "Not found." });

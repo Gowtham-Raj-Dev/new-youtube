@@ -21,7 +21,7 @@ import { splitInBrowser } from "./browser-splitter";
 import { firebase } from "./firebase/client";
 
 /** The PC helper (`npm run helper`, started by `npm run dev`). It cuts with FFmpeg on this machine, so no cloud compute is used. */
-const HELPER = "http://127.0.0.1:4777";
+export const HELPER = "http://127.0.0.1:4777";
 
 /** The helper as a download for Windows, built into the site by `npm run pack-helper`. */
 export const HELPER_DOWNLOAD = "/downloads/ShortFlowHelper-win.zip";
