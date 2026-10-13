@@ -99,6 +99,7 @@ export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string; 
       message: `Queued ${slots.length} Short${slots.length === 1 ? "" : "s"} for YouTube`,
       refType: "schedule",
       refId: shortIds[0],
+      connectionId,
     });
     await batch.commit();
   }

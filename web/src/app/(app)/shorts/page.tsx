@@ -5,8 +5,8 @@ import Link from "next/link";
 import { CalendarClock, Clapperboard, Download, FolderUp, ListPlus, ShieldCheck, Trash2, Upload } from "lucide-react";
 import { DEFAULT_SETTINGS, directUploadVideoId, slotRulesFrom, type ShortDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useChannels } from "@/components/providers/channel-provider";
-import { useBanners, useSchedules, useSettings, useShorts, useVideos, type WithId } from "@/lib/firebase/hooks";
+import { useChannelBanners, useChannelShorts, useChannels } from "@/components/providers/channel-provider";
+import { useSchedules, useSettings, useVideos, type WithId } from "@/lib/firebase/hooks";
 import { describeSchedule, previewSlots, scheduleFacts } from "@/lib/schedule";
 import { canQueue, checkYouTubeStatus, deleteShorts, downloadShorts, isBlockedOnYouTube, matchesShortFilter, needsYouTubeCheck, queueShorts, type ShortFilter } from "@/lib/shorts";
 import { describeImport, useWork } from "@/lib/work/work-provider";
@@ -38,14 +38,13 @@ type Banner = { tone: "success" | "error"; message: string } | null;
 export default function GeneratedShortsPage() {
   const { user } = useAuth();
   const uid = user?.uid;
-  const { data: allShorts, loading, error } = useShorts(uid);
   // With several channels connected, the page is about the one picked in the top bar.
-  const { connections, loading: connectionsLoading, active, multi, showsShort } = useChannels();
-  const shorts = useMemo(() => allShorts.filter((s) => showsShort(s.id)), [allShorts, showsShort]);
+  const { data: shorts, loading, error } = useChannelShorts(uid);
+  const { connections, loading: connectionsLoading, active, multi } = useChannels();
   const { data: videos } = useVideos(uid);
   const { data: settings } = useSettings(uid);
   const { data: schedules } = useSchedules(uid);
-  const { data: banners } = useBanners(uid);
+  const { data: banners } = useChannelBanners(uid);
 
   const [filter, setFilter] = useState<ShortFilter>("all");
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -123,7 +122,7 @@ export default function GeneratedShortsPage() {
     setBanner(null);
     setFilter("all");
     const base = settings ?? DEFAULT_SETTINGS;
-    startImport(files, uid, { ...base, processing: { ...base.processing, cropMode: look.cropMode } }, look.banners, look.reaction);
+    startImport(files, uid, { ...base, processing: { ...base.processing, cropMode: look.cropMode } }, look.banners, look.reaction, active?.id);
   }
 
   async function clear() {
@@ -475,7 +474,13 @@ export default function GeneratedShortsPage() {
         />
       )}
 
-      {open && <ShortEditorDialog key={open.id} short={open} timezone={timezone} onClose={() => setOpenId(null)} onQueue={(id) => submit([id])} />}
+      {open && <ShortEditorDialog key={open.id} short={open} timezone={timezone} onClose={() => setOpenId(null)}
+          onQueue={(id) => submit([id])}
+          onDelete={() => {
+            setOpenId(null);
+            setClearing([open]);
+          }}
+        />}
 
       <ConfirmDialog
         open={clearing !== null}

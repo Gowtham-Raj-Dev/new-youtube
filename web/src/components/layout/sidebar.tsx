@@ -6,6 +6,7 @@ import { LogOut } from "lucide-react";
 import { BRAND } from "@shortflow/shared";
 import { Logo, YouTubeIcon } from "@/components/ui/brand-icons";
 import { useAuth } from "@/components/providers/auth-provider";
+import { useChannels } from "@/components/providers/channel-provider";
 import { signOut } from "@/lib/firebase/auth";
 import { cn } from "@/lib/cn";
 import { isAdmin } from "@/lib/admin";
@@ -14,10 +15,11 @@ import { Avatar } from "./avatar";
 
 function NavLink({ item, pathname, onNavigate }: { item: NavItem; pathname: string; onNavigate?: () => void }) {
   const active = isActive(pathname, item.href);
+  const { hrefFor } = useChannels();
   const Icon = item.icon;
   return (
     <Link
-      href={item.href}
+      href={hrefFor(item.href)}
       onClick={onNavigate}
       className={cn(
         "group relative flex h-9 items-center gap-3 rounded-lg px-3 text-[13.5px] font-medium transition-colors",
@@ -38,11 +40,12 @@ function NavLink({ item, pathname, onNavigate }: { item: NavItem; pathname: stri
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { user } = useAuth();
+  const { hrefFor } = useChannels();
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-16 items-center px-5">
-        <Link href="/dashboard" onClick={onNavigate}>
+        <Link href={hrefFor("/dashboard")} onClick={onNavigate}>
           <Logo />
         </Link>
       </div>

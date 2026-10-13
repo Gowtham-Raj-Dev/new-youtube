@@ -45,6 +45,7 @@ export async function saveConnection(userId: string, channel: ChannelInfo, refre
     message: `Connected YouTube channel ${channel.channelTitle}`,
     refType: "youtube",
     refId: id,
+    connectionId: id,
   });
   notify(batch, userId, {
     kind: "success",
@@ -70,6 +71,7 @@ export async function removeConnection(userId: string, connectionId: string, cha
     message: `Disconnected YouTube channel ${channelTitle}`,
     refType: "youtube",
     refId: connectionId,
+    connectionId,
   });
   await batch.commit();
 }

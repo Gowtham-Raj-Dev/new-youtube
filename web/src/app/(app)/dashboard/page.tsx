@@ -3,11 +3,10 @@
 import { ArrowRight, CalendarClock, Film, Upload } from "lucide-react";
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useChannels } from "@/components/providers/channel-provider";
-import { useSchedules, useSettings, useShorts, useUserDoc, useVideos } from "@/lib/firebase/hooks";
+import { useChannelCounts, useChannelVideos, useChannels } from "@/components/providers/channel-provider";
+import { useSchedules, useSettings, useShorts, useUserDoc } from "@/lib/firebase/hooks";
 import { useUploads } from "@/lib/uploads/upload-provider";
 import { VideoCard, VideoCardSkeleton } from "@/components/video/video-card";
-import { useDashboardCounts } from "@/lib/firebase/counts";
 import { formatInZone, greetingFor, toDate } from "@/lib/time";
 import { Card, CardHeader } from "@/components/ui/card";
 import { ButtonLink } from "@/components/ui/button";
@@ -38,7 +37,10 @@ function ConnectYouTubeBanner() {
 }
 
 function RecentVideos({ uid, timezone }: { uid: string; timezone: string }) {
-  const { data: videos, loading } = useVideos(uid, 4);
+  const { multi } = useChannels();
+  // Other channels' videos are left out, so with several channels more are read to still find the newest four.
+  const { data: recent, loading } = useChannelVideos(uid, multi ? undefined : 4);
+  const videos = recent.slice(0, 4);
   const { byVideoId } = useUploads();
 
   return (
@@ -147,10 +149,8 @@ function UpcomingSchedule({ uid }: { uid: string }) {
 export default function DashboardPage() {
   const { user } = useAuth();
   const { data: profile, loading: profileLoading } = useUserDoc(user?.uid);
-  const { counts: totals } = useDashboardCounts(user?.uid);
-  // The totals cover every channel. With several connected, Scheduled and Published are counted for the one in the top bar.
-  const { active, multi, sent } = useChannels();
-  const counts = totals && multi ? { ...totals, scheduled: sent.filter((s) => s.status === "scheduled").length, published: sent.filter((s) => s.status === "published").length } : totals;
+  const counts = useChannelCounts(user?.uid);
+  const { active, multi } = useChannels();
   const timezone = profile?.timezone ?? DEFAULT_TIMEZONE;
   const firstName = (profile?.displayName ?? user?.displayName ?? "").split(" ")[0] || "there";
 

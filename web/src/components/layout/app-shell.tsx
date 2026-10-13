@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { X } from "lucide-react";
+import { useChannels } from "@/components/providers/channel-provider";
 import { YouTubeIcon } from "@/components/ui/brand-icons";
 import { cn } from "@/lib/cn";
 import { MOBILE_NAV, isActive } from "./nav";
@@ -31,6 +32,7 @@ function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void })
 
 function MobileBottomNav() {
   const pathname = usePathname();
+  const { hrefFor } = useChannels();
   return (
     <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line bg-surface/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden">
       {MOBILE_NAV.map((item) => {
@@ -39,7 +41,7 @@ function MobileBottomNav() {
         return (
           <Link
             key={item.href}
-            href={item.href}
+            href={hrefFor(item.href)}
             className={cn("flex flex-col items-center gap-1 py-2.5 text-[10.5px] font-medium", active ? "text-text" : "text-faint")}
           >
             {Icon === "youtube" ? (

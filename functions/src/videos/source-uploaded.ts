@@ -10,7 +10,7 @@ import { grabFrameJpeg, probeMedia, withStorageSource, type ProbeResult } from "
 async function markFailed(ref: DocumentReference, video: VideoDoc, message: string) {
   const batch = getFirestore().batch();
   batch.update(ref, { status: "failed", errorMessage: message });
-  logActivity(batch, video.userId, { type: "VIDEO_UPLOAD_FAILED", message: `“${video.title}” couldn't be read as a video`, refType: "video", refId: ref.id });
+  logActivity(batch, video.userId, { type: "VIDEO_UPLOAD_FAILED", message: `“${video.title}” couldn't be read as a video`, refType: "video", refId: ref.id, connectionId: video.connectionId ?? null });
   notify(batch, video.userId, { kind: "error", title: "Video upload failed", body: message, link: "/videos" });
   await batch.commit();
 }
@@ -87,6 +87,7 @@ export const onSourceVideoUploaded = onObjectFinalized(
       message: `Uploaded “${video.title}” (${formatDuration(probe.durationSec)})`,
       refType: "video",
       refId: videoId,
+      connectionId: video.connectionId ?? null,
     });
     await batch.commit();
     logger.info("Source video verified", { videoId, ...probe });

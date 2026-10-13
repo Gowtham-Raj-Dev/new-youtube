@@ -4,8 +4,8 @@ import { useMemo, useState } from "react";
 import { ChartColumn, ExternalLink } from "lucide-react";
 import { DEFAULT_SETTINGS, type ShortDoc, type VideoDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useSettings, useShorts, useVideos, type WithId } from "@/lib/firebase/hooks";
-import { useDashboardCounts } from "@/lib/firebase/counts";
+import { useChannelCounts, useChannelShorts } from "@/components/providers/channel-provider";
+import { useSettings, useVideos, type WithId } from "@/lib/firebase/hooks";
 import { isBlockedOnYouTube } from "@/lib/shorts";
 import { dayKey, toDate } from "@/lib/time";
 import { Alert } from "@/components/ui/alert";
@@ -192,10 +192,11 @@ function videoRows(shorts: WithId<ShortDoc>[], videos: WithId<VideoDoc>[]) {
 
 export default function AnalyticsPage() {
   const { user } = useAuth();
-  const { data: shorts, loading, error } = useShorts(user?.uid, SHORTS_LOADED);
+  // With several channels connected, the page is about the one picked in the top bar.
+  const { data: shorts, loading, error } = useChannelShorts(user?.uid, SHORTS_LOADED);
   const { data: videos } = useVideos(user?.uid);
   const { data: settings } = useSettings(user?.uid);
-  const { counts } = useDashboardCounts(user?.uid);
+  const counts = useChannelCounts(user?.uid);
   const [range, setRange] = useState<Range>(14);
   const [now] = useState(() => Date.now());
   const timeZone = (settings ?? DEFAULT_SETTINGS).publishing.timezone;

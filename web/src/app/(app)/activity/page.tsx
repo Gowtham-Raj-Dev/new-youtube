@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Activity, ArrowRight } from "lucide-react";
 import { DEFAULT_TIMEZONE, type ActivityLogDoc, type ActivityType } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
+import { useChannels } from "@/components/providers/channel-provider";
 import { useRecentActivity, useUserDoc, type WithId } from "@/lib/firebase/hooks";
 import { dayKey, formatInZone, toDate } from "@/lib/time";
 import { Alert } from "@/components/ui/alert";
@@ -55,7 +56,10 @@ export default function ActivityLogPage() {
   const { user } = useAuth();
   const { data: profile } = useUserDoc(user?.uid);
   const [count, setCount] = useState(PAGE);
-  const { data, loading, error } = useRecentActivity(user?.uid, count);
+  const { data: loaded, loading, error } = useRecentActivity(user?.uid, count);
+  // With several channels connected, only what happened on the one picked in the top bar.
+  const { owns } = useChannels();
+  const data = useMemo(() => loaded.filter(owns), [loaded, owns]);
   const [filter, setFilter] = useState<Filter>("all");
   const [now] = useState(() => Date.now());
   const timeZone = profile?.timezone ?? DEFAULT_TIMEZONE;
@@ -72,7 +76,7 @@ export default function ActivityLogPage() {
     return byDay;
   }, [data, filter, timeZone, now]);
   // A full page means there may be older entries still on the server.
-  const more = data.length >= count;
+  const more = loaded.length >= count;
 
   return (
     <div className="space-y-6">

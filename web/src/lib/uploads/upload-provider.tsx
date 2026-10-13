@@ -29,7 +29,8 @@ export interface RejectedFile {
 interface UploadContextValue {
   uploads: UploadItem[];
   byVideoId: Map<string, UploadItem>;
-  addFiles: (files: Iterable<File>) => RejectedFile[];
+  /** `connectionId` is the channel the videos are uploaded on, the only one they then show on. */
+  addFiles: (files: Iterable<File>, connectionId?: string) => RejectedFile[];
   cancel: (videoId: string) => Promise<void>;
   retry: (videoId: string) => void;
 }
@@ -61,6 +62,8 @@ function friendlyUploadError(error: unknown): string {
 export function UploadProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<Map<string, UploadItem>>(new Map());
   const files = useRef(new Map<string, File>());
+  /** The channel each video is being uploaded on, for a retry that starts over. */
+  const channels = useRef(new Map<string, string>());
   const tasks = useRef(new Map<string, UploadTask>());
   const watchers = useRef(new Map<string, () => void>());
   /** Video ids whose reservation doc exists, so a retry can reuse it. */
@@ -81,6 +84,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   const forget = useCallback(
     (videoId: string) => {
       files.current.delete(videoId);
+      channels.current.delete(videoId);
       tasks.current.delete(videoId);
       reserved.current.delete(videoId);
       watchers.current.get(videoId)?.();
@@ -151,7 +155,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   );
 
   const start = useCallback(
-    async (file: File) => {
+    async (file: File, connectionId?: string) => {
       const { auth, db } = firebase();
       const uid = auth.currentUser?.uid;
       const contentType = videoTypeForFile(file.name, file.type);
@@ -160,6 +164,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       const ref = doc(collection(db, COLLECTIONS.videos));
       const path = storagePaths.sourceVideo(uid, ref.id, contentType);
       files.current.set(ref.id, file);
+      if (connectionId) channels.current.set(ref.id, connectionId);
       setItems((prev) =>
         new Map(prev).set(ref.id, {
           videoId: ref.id,
@@ -194,6 +199,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
           shortsCount: 0,
           activeJobId: null,
           errorMessage: null,
+          ...(connectionId ? { connectionId } : {}),
         });
       } catch (error) {
         patch(ref.id, { state: "error", error: friendlyUploadError(error) });
@@ -206,7 +212,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   );
 
   const addFiles = useCallback(
-    (incoming: Iterable<File>) => {
+    (incoming: Iterable<File>, connectionId?: string) => {
       const rejected: RejectedFile[] = [];
       for (const file of incoming) {
         if (!videoTypeForFile(file.name, file.type)) {
@@ -216,7 +222,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         } else if (file.size === 0) {
           rejected.push({ name: file.name, reason: "This file is empty." });
         } else {
-          void start(file);
+          void start(file, connectionId);
         }
       }
       return rejected;
@@ -242,8 +248,9 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       if (!file || !contentType || !uid) return;
       if (!reserved.current.has(videoId)) {
         // The reservation was never written; start over with a fresh one.
+        const connectionId = channels.current.get(videoId);
         forget(videoId);
-        void start(file);
+        void start(file, connectionId);
         return;
       }
       patch(videoId, { state: "uploading", error: null, transferred: 0, speed: 0, etaSec: null });

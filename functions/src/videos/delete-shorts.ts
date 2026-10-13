@@ -26,6 +26,8 @@ export const deleteShorts = onCall<{ shortIds?: string[] }>({ timeoutSeconds: 30
   const batch = db.batch();
   let deleted = 0;
   let skipped = 0;
+  // A page only ever lists one channel's Shorts, so the first one's channel is the channel of them all.
+  let connectionId: string | null = null;
   for (const snap of snaps) {
     const short = snap.data() as ShortDoc | undefined;
     if (!short || short.userId !== userId) continue; // already gone, or not theirs
@@ -36,11 +38,12 @@ export const deleteShorts = onCall<{ shortIds?: string[] }>({ timeoutSeconds: 30
     await bucket.deleteFiles({ prefix: `users/${userId}/shorts/${snap.id}/` });
     batch.delete(snap.ref);
     batch.delete(db.collection(COLLECTIONS.schedules).doc(snap.id));
+    connectionId ??= short.connectionId ?? null;
     deleted++;
   }
 
   if (deleted > 0) {
-    logActivity(batch, userId, { type: "VIDEO_DELETED", message: `Deleted ${deleted} Short${deleted === 1 ? "" : "s"}`, refType: "short", refId: null });
+    logActivity(batch, userId, { type: "VIDEO_DELETED", message: `Deleted ${deleted} Short${deleted === 1 ? "" : "s"}`, refType: "short", refId: null, connectionId });
     await batch.commit();
   }
   return { deleted, skipped };

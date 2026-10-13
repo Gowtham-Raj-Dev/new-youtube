@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element -- Storage download URLs in a static export */
 import { useState, type FormEvent } from "react";
-import { Download, ExternalLink, ListPlus, ListX, ShieldCheck } from "lucide-react";
+import { Download, ExternalLink, ListPlus, ListX, ShieldCheck, Trash2 } from "lucide-react";
 import { PRIVACY_STATUSES, formatDuration, type PrivacyStatus, type ShortDoc, type YoutubeCheckState } from "@shortflow/shared";
 import type { WithId } from "@/lib/firebase/hooks";
 import { DESCRIPTION_MAX, TAG_CHARS_MAX, TITLE_MAX, canEdit, canQueue, checkYouTubeStatus, downloadShorts, saveShortMetadata, tagChars, unqueueShort, youtubeShortUrl } from "@/lib/shorts";
@@ -35,12 +35,15 @@ export function ShortEditorDialog({
   timezone,
   onClose,
   onQueue,
+  onDelete,
 }: {
   short: WithId<ShortDoc>;
   timezone: string;
   onClose: () => void;
   /** True once queued. On failure the caller shows why and this resolves false. */
   onQueue: (shortId: string) => Promise<boolean>;
+  /** Asks to delete this Short and its files. Not offered while it is uploading to YouTube. */
+  onDelete: () => void;
 }) {
   const [title, setTitle] = useState(short.title);
   const [description, setDescription] = useState(short.description);
@@ -229,7 +232,12 @@ export function ShortEditorDialog({
           </div>
 
           <div className="mt-auto flex flex-wrap items-center justify-end gap-2 border-t border-line pt-4">
-            {saved && !dirty && <span className="mr-auto text-[13px] text-success">Saved</span>}
+            {short.status !== "uploading" && (
+              <Button type="button" variant="ghost" size="sm" icon={<Trash2 className="size-3.5" />} disabled={busy !== null} onClick={onDelete} className="mr-auto hover:text-danger">
+                Delete
+              </Button>
+            )}
+            {saved && !dirty && <span className="text-[13px] text-success">Saved</span>}
             {inQueue && (
               <Button type="button" variant="secondary" icon={<ListX className="size-4" />} loading={busy === "unqueue"} disabled={busy !== null} onClick={removeFromQueue}>
                 Remove from queue

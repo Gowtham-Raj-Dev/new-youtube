@@ -202,6 +202,7 @@ function probeShortFile(file: File): Promise<ProbedShort | null> {
  * Storage and registered as a Short, with no cutting. They show up as "ready",
  * like the ones cut from a video. Files that can't be Shorts come back in `rejected`.
  * With `banners` or a `reaction` video, the PC helper puts them on each one first (framed as `settings.processing.cropMode` says).
+ * `connectionId` is the channel they are added on, the only one they then show on.
  */
 export async function uploadShortFiles(
   files: File[],
@@ -210,6 +211,7 @@ export async function uploadShortFiles(
   onProgress: (progress: ImportProgress) => void,
   banners: Partial<Record<BannerPosition, BannerDoc>> = {},
   reaction: ReactionChoice | null = null,
+  connectionId?: string,
 ): Promise<{ added: number; rejected: RejectedShortFile[] }> {
   const { db, storage } = firebase();
   const videoId = directUploadVideoId(uid);
@@ -304,6 +306,7 @@ export async function uploadShortFiles(
         youtubeVideoId: null,
         publishedAt: null,
         errorMessage: null,
+        ...(connectionId ? { connectionId } : {}),
       });
       added++;
     } catch (err) {

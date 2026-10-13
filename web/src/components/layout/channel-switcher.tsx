@@ -10,11 +10,11 @@ import { Avatar } from "./avatar";
 
 /**
  * The channel the app is on, in the top bar. With several connected it opens a
- * list to switch between them; whichever is chosen is the one Shorts are queued
- * to and the one the pages show.
+ * list to switch between them; whichever is chosen is the one the pages show,
+ * each channel having its own videos, Shorts, banners, queue and activity.
  */
 export function ChannelSwitcher() {
-  const { connections, loading, active, switchTo } = useChannels();
+  const { connections, loading, active, switchTo, hrefFor } = useChannels();
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
 
@@ -97,7 +97,7 @@ export function ChannelSwitcher() {
               );
             })}
           </ul>
-          <Link href="/youtube" onClick={() => setOpen(false)} className="flex items-center gap-2 border-t border-line px-3.5 py-2.5 text-[12.5px] font-medium text-muted transition hover:bg-white/[0.04] hover:text-text">
+          <Link href={hrefFor("/youtube")} onClick={() => setOpen(false)} className="flex items-center gap-2 border-t border-line px-3.5 py-2.5 text-[12.5px] font-medium text-muted transition hover:bg-white/[0.04] hover:text-text">
             <Settings2 className="size-3.5" />
             Connect or manage channels
           </Link>

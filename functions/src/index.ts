@@ -8,4 +8,4 @@ export { queueShorts, rescheduleQueue, unqueueShort } from "./schedule/functions
 export { deleteVideo } from "./videos/delete-video";
 export { deleteShorts } from "./videos/delete-shorts";
 export { cleanupStaleUploads } from "./videos/cleanup";
-export { adminUsage } from "./admin/usage";
+export { adminUsage, adminRemoveLeftovers } from "./admin/usage";

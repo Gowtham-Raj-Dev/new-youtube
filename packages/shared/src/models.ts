@@ -173,6 +173,8 @@ export interface VideoDoc {
   errorMessage: string | null;
   /** Set when the user deleted the original but kept the Shorts. */
   sourceDeletedAt?: TimestampLike | null;
+  /** The channel it was uploaded on, so it shows only there. Absent on ones made before channels were kept apart. */
+  connectionId?: string | null;
 }
 
 /** shorts/{shortId} */
@@ -208,6 +210,8 @@ export interface ShortDoc {
   pendingPrivacy?: PrivacyStatus | null;
   /** Set once the video file was removed from Storage after its upload to YouTube. The thumbnail is kept. */
   fileDeletedAt?: TimestampLike | null;
+  /** The channel it was made on (its video's channel), so it shows only there. Absent on ones made before channels were kept apart. */
+  connectionId?: string | null;
 }
 
 /**
@@ -310,6 +314,8 @@ export interface BannerDoc {
   width: number;
   height: number;
   createdAt: TimestampLike;
+  /** The channel it was made on, so it shows only there. Absent on ones made before channels were kept apart. */
+  connectionId?: string | null;
 }
 
 /** activityLogs/{logId} — written only by the backend. */
@@ -319,6 +325,8 @@ export interface ActivityLogDoc {
   message: string;
   refType: "video" | "short" | "schedule" | "youtube" | null;
   refId: string | null;
+  /** The channel it happened on, when it is about one. */
+  connectionId?: string | null;
   createdAt: TimestampLike;
 }
 

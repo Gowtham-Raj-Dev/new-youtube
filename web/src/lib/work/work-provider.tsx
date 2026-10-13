@@ -32,7 +32,7 @@ export interface SplitJob {
 
 interface WorkContextValue {
   importJob: ImportJob | null;
-  startImport: (files: File[], uid: string, settings: Settings, banners: ChosenBanners, reaction?: ReactionChoice | null) => void;
+  startImport: (files: File[], uid: string, settings: Settings, banners: ChosenBanners, reaction?: ReactionChoice | null, connectionId?: string) => void;
   dismissImport: () => void;
   splits: Map<string, SplitJob>;
   startSplit: (video: VideoDoc & { id: string }, shortDuration: number, settings: Settings, banners: ChosenBanners, label: { template: string; x: number; y: number } | null, tail?: TailMode, reaction?: ReactionChoice | null) => void;
@@ -69,11 +69,11 @@ export function WorkProvider({ children }: { children: ReactNode }) {
   const importing = useRef(false);
   const splitting = useRef(new Set<string>());
 
-  const startImport = useCallback((files: File[], uid: string, settings: Settings, banners: ChosenBanners, reaction: ReactionChoice | null = null) => {
+  const startImport = useCallback((files: File[], uid: string, settings: Settings, banners: ChosenBanners, reaction: ReactionChoice | null = null, connectionId?: string) => {
     if (importing.current || files.length === 0) return;
     importing.current = true;
     setImportJob({ status: "working", progress: { index: 0, total: files.length, percent: 0 }, added: 0, rejected: [], error: null });
-    uploadShortFiles(files, uid, settings, (progress) => setImportJob((job) => job && { ...job, progress }), banners, reaction)
+    uploadShortFiles(files, uid, settings, (progress) => setImportJob((job) => job && { ...job, progress }), banners, reaction, connectionId)
       .then(({ added, rejected }) => setImportJob((job) => job && { ...job, status: "done", added, rejected }))
       .catch((err) => setImportJob((job) => job && { ...job, status: "failed", error: err instanceof HelperOfflineError || err instanceof ReactionVideoError || err instanceof BrowserRenderError ? err.message : null }))
       .finally(() => {

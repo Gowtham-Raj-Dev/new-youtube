@@ -2,6 +2,7 @@
 
 import { Activity, CalendarClock, CircleCheck, CircleX, Clapperboard, Film, LoaderCircle, Trash2, Unplug, type LucideIcon } from "lucide-react";
 import type { ActivityType } from "@shortflow/shared";
+import { useChannels } from "@/components/providers/channel-provider";
 import { useRecentActivity } from "@/lib/firebase/hooks";
 import { timeAgo, toDate } from "@/lib/time";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -37,7 +38,10 @@ export function ActivityIcon({ type }: { type: ActivityType }) {
 }
 
 export function ActivityFeed({ uid }: { uid: string }) {
-  const { data, loading } = useRecentActivity(uid, 8);
+  const { multi, owns } = useChannels();
+  // Other channels' entries are left out, so with several channels more are read to still fill the list.
+  const { data: loaded, loading } = useRecentActivity(uid, multi ? 40 : 8);
+  const data = loaded.filter(owns).slice(0, 8);
 
   if (loading) {
     return (

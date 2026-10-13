@@ -69,7 +69,7 @@ export const deleteVideo = onCall<{ videoId?: string; mode?: DeleteMode }>({ tim
   }
 
   const what = { everything: "video and its Shorts", source: "original video", shorts: `${shortsDeleted} Shorts` }[mode];
-  logActivity(batch(), userId, { type: "VIDEO_DELETED", message: `Deleted the ${what} of “${video.title}”`, refType: "video", refId: videoId });
+  logActivity(batch(), userId, { type: "VIDEO_DELETED", message: `Deleted the ${what} of “${video.title}”`, refType: "video", refId: videoId, connectionId: video.connectionId ?? null });
 
   for (const b of batches) await b.commit();
   return { ok: true, shortsDeleted };

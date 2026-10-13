@@ -163,6 +163,7 @@ async function settle({ ref, schedule, short }: Claimed, result: Settlement, pre
       message: held ? `Uploaded “${short.title}” as Unlisted — checking it for copyright blocks` : `Published “${short.title}” to YouTube`,
       refType: "short",
       refId: ref.id,
+      connectionId: schedule.connectionId,
     });
     if (prefs.uploads && !held) {
       notify(batch, userId, { kind: "success", title: "Short published", body: `“${short.title}” is now on YouTube.`, link: "/shorts" });
@@ -180,6 +181,7 @@ async function settle({ ref, schedule, short }: Claimed, result: Settlement, pre
         message: `Couldn't publish “${short.title}” to YouTube`,
         refType: "short",
         refId: ref.id,
+        connectionId: schedule.connectionId,
       });
     }
     if (prefs.failures) {

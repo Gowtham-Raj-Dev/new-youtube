@@ -139,6 +139,8 @@ export async function splitInBrowser(
       youtubeVideoId: null,
       publishedAt: null,
       errorMessage: null,
+      // Shorts stay on their video's channel.
+      ...(video.connectionId ? { connectionId: video.connectionId } : {}),
     });
   }
   onProgress({ stage: "Done", percent: 100 });

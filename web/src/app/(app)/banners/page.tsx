@@ -4,7 +4,8 @@ import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type Rea
 import { Check, ImagePlus, PanelTop, Play, Plus, Trash2, Upload } from "lucide-react";
 import { BANNER_POSITIONS, type BannerDoc, type BannerPosition } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useBanners, type WithId } from "@/lib/firebase/hooks";
+import { useChannelBanners, useChannels } from "@/components/providers/channel-provider";
+import type { WithId } from "@/lib/firebase/hooks";
 import {
   BANNER_LAYOUTS,
   BANNER_PATTERNS,
@@ -180,7 +181,9 @@ function ReactionSetupTab() {
 
 export default function BannersPage() {
   const { user } = useAuth();
-  const { data: banners, loading, error } = useBanners(user?.uid);
+  // Banners belong to the channel they were made on.
+  const { active } = useChannels();
+  const { data: banners, loading, error } = useChannelBanners(user?.uid);
   const [tab, setTab] = useState<Tab>("design");
   // "Add or resize" beside the reaction video rows links straight to that tab.
   // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time read of the link's ?tab=
@@ -279,7 +282,7 @@ export default function BannersPage() {
     void run("design", async (uid) => {
       for (const position of shown) {
         const draft = drafts[position];
-        await addBanner(uid, await bannerDesignToPng(designOf(draft), position, draft.picture), position, draft.style.text || draft.style.sub || "Banner");
+        await addBanner(uid, await bannerDesignToPng(designOf(draft), position, draft.picture), position, draft.style.text || draft.style.sub || "Banner", active?.id);
       }
       return mode === "both" ? SAVED_PAIR : SAVED_ONE(mode);
     });
@@ -295,15 +298,15 @@ export default function BannersPage() {
         "upload",
         async (uid) => {
           const parts = await splitFrameTemplate(file);
-          await addBanner(uid, parts.top, "top", name);
-          await addBanner(uid, parts.bottom, "bottom", name);
+          await addBanner(uid, parts.top, "top", name, active?.id);
+          await addBanner(uid, parts.bottom, "bottom", name, active?.id);
           return SAVED_PAIR;
         },
         "Couldn't save the template. Check your connection and try again.",
       );
     } else {
       void run("upload", async (uid) => {
-        await addBanner(uid, file, kind, name);
+        await addBanner(uid, file, kind, name, active?.id);
         return SAVED_ONE(kind);
       });
     }

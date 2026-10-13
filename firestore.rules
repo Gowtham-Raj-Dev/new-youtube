@@ -57,6 +57,13 @@ service cloud.firestore {
       return v is list && v.size() <= 30;
     }
 
+    // The channel a video, Short or banner was made on: one of the user's own
+    // connections, whose ids are {uid}_{channelId}. Optional — see connectionId in models.ts.
+    function isOwnChannel(d) {
+      return !('connectionId' in d)
+        || (d.connectionId is string && d.connectionId.matches('^' + request.auth.uid + '_[A-Za-z0-9_-]{1,64}$'));
+    }
+
     // YouTube limits: title ≤ 100 chars, description ≤ 5000 bytes.
     function isYoutubeMetadata(d) {
       return isText(d.title, 1, 100)
@@ -161,9 +168,10 @@ service cloud.firestore {
       allow read: if ownsExisting();
 
       allow create: if signedIn()
-        && incoming().keys().hasOnly(['userId', 'title', 'fileName', 'storagePath', 'contentType', 'fileSize', 'status', 'createdAt', 'uploadedAt', 'durationSec', 'width', 'height', 'thumbnailPath', 'processingStartedAt', 'processingCompletedAt', 'shortsCount', 'activeJobId', 'errorMessage'])
+        && incoming().keys().hasOnly(['userId', 'title', 'fileName', 'storagePath', 'contentType', 'fileSize', 'status', 'createdAt', 'uploadedAt', 'durationSec', 'width', 'height', 'thumbnailPath', 'processingStartedAt', 'processingCompletedAt', 'shortsCount', 'activeJobId', 'errorMessage', 'connectionId'])
         && incoming().keys().hasAll(['userId', 'title', 'fileName', 'storagePath', 'contentType', 'fileSize', 'status', 'createdAt', 'uploadedAt', 'durationSec', 'width', 'height', 'thumbnailPath', 'processingStartedAt', 'processingCompletedAt', 'shortsCount', 'activeJobId', 'errorMessage'])
         && incoming().userId == request.auth.uid
+        && isOwnChannel(incoming())
         && isText(incoming().title, 1, 200)
         && isText(incoming().fileName, 1, 255)
         && incoming().contentType in ['video/mp4', 'video/quicktime', 'video/x-matroska', 'video/webm']
@@ -202,9 +210,10 @@ service cloud.firestore {
       allow read: if ownsExisting();
 
       allow create: if signedIn()
-        && incoming().keys().hasOnly(['userId', 'videoId', 'segmentIndex', 'startSec', 'endSec', 'durationSec', 'storagePath', 'thumbnailPath', 'cropMode', 'status', 'createdAt', 'title', 'description', 'tags', 'privacy', 'categoryId', 'publishAt', 'youtubeVideoId', 'publishedAt', 'errorMessage'])
+        && incoming().keys().hasOnly(['userId', 'videoId', 'segmentIndex', 'startSec', 'endSec', 'durationSec', 'storagePath', 'thumbnailPath', 'cropMode', 'status', 'createdAt', 'title', 'description', 'tags', 'privacy', 'categoryId', 'publishAt', 'youtubeVideoId', 'publishedAt', 'errorMessage', 'connectionId'])
         && incoming().keys().hasAll(['userId', 'videoId', 'segmentIndex', 'startSec', 'endSec', 'durationSec', 'storagePath', 'thumbnailPath', 'cropMode', 'status', 'createdAt', 'title', 'description', 'tags', 'privacy', 'categoryId', 'publishAt', 'youtubeVideoId', 'publishedAt', 'errorMessage'])
         && incoming().userId == request.auth.uid
+        && isOwnChannel(incoming())
         && incoming().videoId is string
         // Ready-made Shorts uploaded from the user's files have no video — see directUploadVideoId().
         && (incoming().videoId == 'upload-' + request.auth.uid
@@ -243,9 +252,10 @@ service cloud.firestore {
       allow read: if ownsExisting();
 
       allow create: if signedIn()
-        && incoming().keys().hasOnly(['userId', 'name', 'position', 'storagePath', 'width', 'height', 'createdAt'])
+        && incoming().keys().hasOnly(['userId', 'name', 'position', 'storagePath', 'width', 'height', 'createdAt', 'connectionId'])
         && incoming().keys().hasAll(['userId', 'name', 'position', 'storagePath', 'width', 'height', 'createdAt'])
         && incoming().userId == request.auth.uid
+        && isOwnChannel(incoming())
         && isText(incoming().name, 1, 80)
         && incoming().position in ['top', 'bottom']
         && incoming().storagePath.matches('^users/' + request.auth.uid + '/banners/' + bannerId + '[.](png|jpg|webp)$')

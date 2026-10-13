@@ -5,7 +5,8 @@ import Link from "next/link";
 import { Film, Sparkles } from "lucide-react";
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE, type VideoDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useBanners, useSettings, useShorts, useUserDoc, useVideos, type WithId } from "@/lib/firebase/hooks";
+import { useChannelBanners, useChannelVideos, useChannels } from "@/components/providers/channel-provider";
+import { useSettings, useShorts, useUserDoc, type WithId } from "@/lib/firebase/hooks";
 import { useUploads, type RejectedFile } from "@/lib/uploads/upload-provider";
 import { matchesFilter, type VideoFilter } from "@/lib/videos";
 import { useWork } from "@/lib/work/work-provider";
@@ -28,10 +29,12 @@ const FILTERS: Array<{ id: VideoFilter; label: string }> = [
 export default function VideosPage() {
   const { user } = useAuth();
   const { data: profile } = useUserDoc(user?.uid);
-  const { data: storedVideos, loading, error } = useVideos(user?.uid);
+  // With several channels connected, the page is about the one picked in the top bar.
+  const { active } = useChannels();
+  const { data: storedVideos, loading, error } = useChannelVideos(user?.uid);
   const { data: shorts } = useShorts(user?.uid);
   const { data: settings } = useSettings(user?.uid);
-  const { data: banners } = useBanners(user?.uid);
+  const { data: banners } = useChannelBanners(user?.uid);
   const { splits, dismissSplit } = useWork();
   const finished = [...splits.values()].filter((job) => job.status !== "working");
 
@@ -58,7 +61,7 @@ export default function VideosPage() {
   const unplaced = uploads.filter((u) => u.state === "error" && !videos.some((v) => v.id === u.videoId));
 
   function onFiles(files: File[]) {
-    setRejected(addFiles(files));
+    setRejected(addFiles(files, active?.id));
   }
 
   return (

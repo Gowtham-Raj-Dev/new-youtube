@@ -156,6 +156,11 @@ describe("videos", () => {
       alice().firestore().doc("videos/v1").set(newVideo("alice", "v1", { storagePath: "users/bob/videos/original/v1/source.mp4" })),
     );
   });
+  test("can be put on one of the user's own channels only", async () => {
+    await assertSucceeds(alice().firestore().doc("videos/v1").set(newVideo("alice", "v1", { connectionId: "alice_UCabc-123" })));
+    await assertFails(alice().firestore().doc("videos/v2").set(newVideo("alice", "v2", { connectionId: "bob_UCabc-123" })));
+    await assertFails(alice().firestore().doc("videos/v3").set(newVideo("alice", "v3", { connectionId: null })));
+  });
   test("rejects files over 10 GiB", async () => {
     await assertFails(alice().firestore().doc("videos/v1").set(newVideo("alice", "v1", { fileSize: 10 * GiB + 1 })));
   });

@@ -13,3 +13,9 @@ export async function fetchUsage(): Promise<UsageReport> {
   const { data } = await httpsCallable<void, UsageReport>(firebase().functions, "adminUsage", { timeout: 300_000 })();
   return data;
 }
+
+/** Deletes the files of Shorts and videos that are no longer in the app. Returns how much was freed. */
+export async function removeLeftovers(): Promise<{ files: number; bytes: number }> {
+  const { data } = await httpsCallable<void, { files: number; bytes: number }>(firebase().functions, "adminRemoveLeftovers", { timeout: 300_000 })();
+  return data;
+}

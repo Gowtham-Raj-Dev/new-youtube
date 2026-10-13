@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu } from "lucide-react";
 import { useAuth } from "@/components/providers/auth-provider";
+import { useChannels } from "@/components/providers/channel-provider";
 import { LogoMark } from "@/components/ui/brand-icons";
 import { ADMIN_NAV, FOOTER_NAV, MAIN_NAV, isActive } from "./nav";
 import { ChannelSwitcher } from "./channel-switcher";
@@ -13,6 +14,7 @@ import { Avatar } from "./avatar";
 export function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
   const pathname = usePathname();
   const { user } = useAuth();
+  const { hrefFor } = useChannels();
   const title = [...MAIN_NAV, ...FOOTER_NAV, ...ADMIN_NAV].find((item) => isActive(pathname, item.href))?.label ?? "";
 
   return (
@@ -24,7 +26,7 @@ export function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
       >
         <Menu className="size-[18px]" />
       </button>
-      <Link href="/dashboard" className="lg:hidden">
+      <Link href={hrefFor("/dashboard")} className="lg:hidden">
         <LogoMark className="size-7" />
       </Link>
       <h1 className="text-[15px] font-semibold tracking-tight">{title}</h1>
@@ -33,7 +35,7 @@ export function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
         <ChannelSwitcher />
         {user && <NotificationsMenu uid={user.uid} />}
         {user && (
-          <Link href="/settings" className="lg:hidden" aria-label="Profile and settings">
+          <Link href={hrefFor("/settings")} className="lg:hidden" aria-label="Profile and settings">
             <Avatar name={user.displayName ?? user.email} src={user.photoURL} className="size-9" />
           </Link>
         )}
