@@ -63,6 +63,15 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         ))}
       </div>
 
+      <p className="flex gap-3 px-6 pb-2 text-[11px] text-faint">
+        <Link href="/privacy" className="transition hover:text-muted">
+          Privacy
+        </Link>
+        <Link href="/terms" className="transition hover:text-muted">
+          Terms
+        </Link>
+      </p>
+
       {user && (
         <div className="flex items-center gap-3 border-t border-line px-4 py-3.5">
           <Avatar name={user.displayName ?? user.email} src={user.photoURL} />

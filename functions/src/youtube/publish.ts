@@ -2,8 +2,9 @@ import { onSchedule } from "firebase-functions/scheduler";
 import * as logger from "firebase-functions/logger";
 import { FieldValue, Timestamp, getFirestore, type DocumentReference, type DocumentSnapshot, type QueryDocumentSnapshot } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
-import { COLLECTIONS, type ScheduleDoc, type SettingsDoc, type ShortDoc, type YoutubeCheckState } from "@shortflow/shared";
-import { STORAGE_REGION, TOKEN_ENCRYPTION_KEY, YOUTUBE_CLIENT_SECRET } from "../config";
+import { getAuth } from "firebase-admin/auth";
+import { ADMIN_EMAILS, COLLECTIONS, type ScheduleDoc, type SettingsDoc, type ShortDoc, type YoutubeCheckState } from "@shortflow/shared";
+import { DAILY_UPLOADS_PER_USER, STORAGE_REGION, TOKEN_ENCRYPTION_KEY, YOUTUBE_CLIENT_SECRET } from "../config";
 import { logActivity, notify } from "../lib/activity";
 import { getAccessToken } from "./connections";
 import { MANAGE_SCOPE, TokenRevokedError } from "./oauth";
@@ -12,6 +13,8 @@ import { YouTubeUploadError, uploadToYouTube, type UploadSource } from "./upload
 
 const PAGE_SIZE = 50;
 const MAX_UPLOADS_PER_RUN = 10;
+/** So one busy account can't take a whole run while others wait. */
+const MAX_UPLOADS_PER_USER_PER_RUN = 3;
 const MAX_ATTEMPTS = 3;
 /** Stop starting uploads this far into a run, so the one in flight finishes before the timeout. */
 const RUN_BUDGET_MS = 6 * 60 * 1000;
@@ -33,14 +36,21 @@ type Settlement =
   /** Back in line for the next sweep. */
   | { status: "scheduled"; countAttempt: boolean };
 
-/** What the sweep should do after one schedule: carry on, skip this channel, or stop uploading altogether. */
-type Outcome = "published" | "skipped" | "pause_connection" | "stop_run";
+/** What the sweep should do after one schedule: carry on, skip this channel or this user, or stop uploading altogether. */
+type Outcome = "published" | "skipped" | "pause_connection" | "pause_user" | "stop_run";
+
+/** A user's Shorts published since the last quota reset, against their daily limit. */
+interface Allowance {
+  used: number;
+  limit: number;
+}
 
 interface Run {
   connectionState: (connectionId: string) => Promise<ConnectionState>;
   prefs: (userId: string) => Promise<NotificationPrefs>;
   /** Whether this connection may change a video's visibility — only ones made since that permission was asked for. */
   canManage: (connectionId: string) => Promise<boolean>;
+  allowance: (userId: string) => Promise<Allowance>;
 }
 
 function memo<T>(load: (key: string) => Promise<T>) {
@@ -67,6 +77,13 @@ function startRun(): Run {
     canManage: memo(async (connectionId) => {
       const scopes = (await db.collection(COLLECTIONS.youtubeCredentials).doc(connectionId).get()).get("scopes") as string[] | undefined;
       return scopes?.includes(MANAGE_SCOPE) ?? false;
+    }),
+    allowance: memo(async (userId) => {
+      const user = await getAuth().getUser(userId).catch(() => null);
+      if (user?.email && user.emailVerified && ADMIN_EMAILS.includes(user.email)) return { used: 0, limit: Infinity };
+      const since = Timestamp.fromMillis(lastQuotaResetMs(Date.now()));
+      const published = await db.collection(COLLECTIONS.shorts).where("userId", "==", userId).where("publishedAt", ">=", since).count().get();
+      return { used: published.data().count, limit: DAILY_UPLOADS_PER_USER.value() };
     }),
   };
 }
@@ -211,7 +228,7 @@ export async function publishNow(shortIds: string[], deadline: number): Promise<
     if (!doc.exists) continue;
     const outcome = await publishOne(doc, run);
     if (outcome === "published") published++;
-    if (outcome === "stop_run" || outcome === "pause_connection") break;
+    if (outcome === "stop_run" || outcome === "pause_connection" || outcome === "pause_user") break;
   }
   return published;
 }
@@ -226,6 +243,12 @@ async function publishOne(doc: DocumentSnapshot, run: Run): Promise<Outcome> {
   if (!claimed) return "skipped";
   const { schedule, short } = claimed;
   const prefs = await run.prefs(schedule.userId);
+  const allowance = await run.allowance(schedule.userId);
+  if (allowance.used >= allowance.limit) {
+    const message = `You've published ${allowance.limit} Shorts today, the daily limit for each account. This Short will upload automatically once the limit resets.`;
+    await settle(claimed, { status: "quota_exceeded", message }, prefs);
+    return "pause_user";
+  }
   const fail = (message: string) => settle(claimed, { status: "failed", message }, prefs);
 
   if (connection === "missing") {
@@ -285,6 +308,7 @@ async function publishOne(doc: DocumentSnapshot, run: Run): Promise<Outcome> {
   // and is flagged as interrupted, rather than being retried into a duplicate video.
   logger.info("Uploaded to YouTube", { shortId: doc.id, connectionId, youtubeVideoId });
   await settle(claimed, { status: "published", youtubeVideoId, held }, prefs);
+  allowance.used++;
   return "published";
 }
 
@@ -408,6 +432,8 @@ export const publishDueShorts = onSchedule(
 
     const quotaResetMs = lastQuotaResetMs(startedAt);
     const paused = new Set<string>();
+    const pausedUsers = new Set<string>();
+    const perUser = new Map<string, number>();
     let published = 0;
     let cursor: QueryDocumentSnapshot | undefined;
 
@@ -432,18 +458,25 @@ export const publishDueShorts = onSchedule(
       for (const doc of page.docs) {
         if (published >= MAX_UPLOADS_PER_RUN || Date.now() - startedAt > RUN_BUDGET_MS) break sweep;
         const connectionId = doc.get("connectionId") as string;
-        if (paused.has(connectionId)) continue;
+        const userId = doc.get("userId") as string;
+        if (paused.has(connectionId) || pausedUsers.has(userId)) continue;
+        // Past this run's share: still due, so the next run picks it up.
+        if ((perUser.get(userId) ?? 0) >= MAX_UPLOADS_PER_USER_PER_RUN) continue;
 
         const outcome = await publishOne(doc, run);
         if (outcome === "stop_run") break sweep;
         if (outcome === "pause_connection") paused.add(connectionId);
-        if (outcome === "published") published++;
+        if (outcome === "pause_user") pausedUsers.add(userId);
+        if (outcome === "published") {
+          published++;
+          perUser.set(userId, (perUser.get(userId) ?? 0) + 1);
+        }
       }
 
       if (page.size < PAGE_SIZE) break;
       cursor = page.docs[page.docs.length - 1];
     }
 
-    logger.info("Publish sweep", { published, pausedConnections: paused.size });
+    logger.info("Publish sweep", { published, pausedConnections: paused.size, usersAtLimit: pausedUsers.size });
   },
 );

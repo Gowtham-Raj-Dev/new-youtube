@@ -18,6 +18,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
 import { YouTubeIcon } from "@/components/ui/brand-icons";
 import { TagInput } from "@/components/short/tag-input";
+import { YourDataCard } from "@/components/settings/your-data-card";
 import { cn } from "@/lib/cn";
 
 const FRAMINGS = ["center", "blur", "fit"] as const;
@@ -364,6 +365,8 @@ export default function SettingsPage() {
       ) : (
         !error && <SettingsForm user={user} profile={profile} settings={settings ?? DEFAULT_SETTINGS} />
       )}
+
+      <YourDataCard />
     </div>
   );
 }

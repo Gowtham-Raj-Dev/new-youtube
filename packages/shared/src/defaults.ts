@@ -4,7 +4,12 @@ import type { SettingsDoc } from "./models";
 export const BRAND = {
   name: "ShortFlow",
   tagline: "Turn Long Videos Into Scheduled Shorts.",
+  /** Shown on the Privacy and Terms pages and in the footer. Google's OAuth review checks it answers. */
+  supportEmail: "gowthamraje1221@gmail.com",
 } as const;
+
+/** The date the Privacy Policy and Terms last changed. Update it whenever either page changes. */
+export const LEGAL_UPDATED = "14 October 2026";
 
 export const DEFAULT_TIMEZONE = "Asia/Kolkata";
 

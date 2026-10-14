@@ -2,6 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element -- pictures passed on by the PC helper, in a static export */
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import { Check, Clapperboard, Download, FolderUp, KeyRound, LogIn, RefreshCw, Search } from "lucide-react";
 import { DEFAULT_SETTINGS, formatDuration } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -22,6 +23,7 @@ import {
   type InstagramVideo,
 } from "@/lib/instagram";
 import { HELPER_DOWNLOAD } from "@/lib/local-splitter";
+import { isAdmin } from "@/lib/admin";
 import { describeImport, importPercent, useWork } from "@/lib/work/work-provider";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -44,7 +46,23 @@ interface Listing {
   next: string | null;
 }
 
+/**
+ * Owner-only: it runs through the PC helper, and downloading other people's
+ * Instagram videos isn't something to offer the public.
+ */
 export default function InstagramDownloaderPage() {
+  const { user } = useAuth();
+  const router = useRouter();
+  const admin = isAdmin(user);
+
+  useEffect(() => {
+    if (!admin) router.replace("/dashboard");
+  }, [admin, router]);
+
+  return admin ? <InstagramDownloader /> : null;
+}
+
+function InstagramDownloader() {
   const { user } = useAuth();
   const uid = user?.uid;
   const { active, hrefFor } = useChannels();

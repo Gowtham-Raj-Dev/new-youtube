@@ -64,6 +64,11 @@ PowerShell `$env:FUNCTIONS_DISCOVERY_TIMEOUT = "60"; firebase deploy --only func
 prefetch segments for route groups as nested folders, but the router requests flat dotted filenames.
 Remove it once Next fixes this.
 
+## Going public
+
+OAuth verification, the YouTube API audit and quota extension, and what the app already does for them:
+[docs/going-public.md](docs/going-public.md).
+
 ## YouTube connection — one-time setup
 
 1. Google Cloud → enable **YouTube Data API v3**.

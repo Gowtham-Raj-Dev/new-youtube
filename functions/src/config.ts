@@ -1,4 +1,4 @@
-import { defineSecret, defineString } from "firebase-functions/params";
+import { defineInt, defineSecret, defineString } from "firebase-functions/params";
 
 export const REGION = "asia-south1";
 
@@ -26,6 +26,16 @@ export function appOrigins(): string[] {
     .map((origin) => origin.trim().replace(/\/$/, ""))
     .filter(Boolean);
 }
+
+/**
+ * Every user shares this project's YouTube API quota, so each account may publish at most this many
+ * Shorts per YouTube day (until midnight Pacific). The owner accounts in ADMIN_EMAILS have no limit.
+ * Raise it once Google grants more quota.
+ */
+export const DAILY_UPLOADS_PER_USER = defineInt("DAILY_UPLOADS_PER_USER", {
+  default: 10,
+  description: "Shorts each non-owner account may publish per day",
+});
 
 // Secrets live in Cloud Secret Manager: `firebase functions:secrets:set <NAME>`.
 export const YOUTUBE_CLIENT_SECRET = defineSecret("YOUTUBE_OAUTH_CLIENT_SECRET");

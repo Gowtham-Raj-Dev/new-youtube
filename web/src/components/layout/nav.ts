@@ -24,7 +24,6 @@ export const MAIN_NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/banners", label: "Banners", icon: PanelTop },
   { href: "/videos", label: "Videos", icon: Film },
-  { href: "/instagram", label: "Insta Downloader", icon: Download },
   { href: "/shorts", label: "Shorts", icon: Clapperboard },
   { href: "/schedule", label: "Schedule", icon: CalendarClock },
   { href: "/queue", label: "Queue", icon: Layers },
@@ -38,8 +37,11 @@ export const FOOTER_NAV: NavItem[] = [
   { href: "/help", label: "Help", icon: LifeBuoy },
 ];
 
-/** Only shown to the owner of the app. */
-export const ADMIN_NAV: NavItem[] = [{ href: "/usage", label: "Usage", icon: Gauge }];
+/** Only shown to the owners of the app. */
+export const ADMIN_NAV: NavItem[] = [
+  { href: "/instagram", label: "Insta Downloader", icon: Download },
+  { href: "/usage", label: "Usage", icon: Gauge },
+];
 
 /** Shown in the mobile bottom bar. */
 export const MOBILE_NAV = MAIN_NAV.filter((item) => ["/dashboard", "/videos", "/shorts", "/schedule", "/youtube"].includes(item.href));

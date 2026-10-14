@@ -8,7 +8,7 @@ const STEPS: Array<{ href: string; icon: LucideIcon | "youtube"; title: string; 
   { href: "/youtube", icon: "youtube", title: "Connect YouTube", body: "Link the channel your Shorts should go to. Tick every permission on Google's screen." },
   { href: "/videos", icon: Film, title: "Upload a video", body: "Drop in a long video: MP4, MOV, MKV or WebM, up to 10 GB." },
   { href: "/banners", icon: PanelTop, title: "Make banners (optional)", body: "Design a strip for the top, the bottom, or both, or upload your own image." },
-  { href: "/videos", icon: Clapperboard, title: "Generate Shorts", body: "Click the video, choose the length, framing and banners, then generate. Shorts are cut on this PC." },
+  { href: "/videos", icon: Clapperboard, title: "Generate Shorts", body: "Click the video, choose the length, framing and banners, then generate. Shorts are cut in your browser, or faster with the free Windows helper." },
   { href: "/schedule", icon: CalendarClock, title: "Set your schedule", body: "Pick the first upload time of the day, the gap between Shorts, the days and the daily limit." },
   { href: "/shorts", icon: Layers, title: "Queue your Shorts", body: "Tick Shorts and submit them to the queue. Each one takes the next free slot and uploads by itself." },
 ];
@@ -18,11 +18,12 @@ const TOPICS: Array<{ title: string; questions: Array<{ q: string; a: ReactNode 
     title: "Cutting Shorts",
     questions: [
       {
-        q: "It says “The PC helper isn't running”. What do I do?",
+        q: "Do I need to install the PC helper?",
         a: (
           <>
-            Shorts are cut by a small helper program on your own PC, so it has to be running. Start ShortFlow with <Code>npm run dev</Code>, which starts the helper too, or start just the helper with <Code>npm run helper</Code>. Leave its window
-            open, then press Generate again.
+            No. Without it, Shorts are cut right here in your browser — use Chrome or Edge and keep the tab open while it works. On Windows the free helper is
+            faster for long videos: download it from the note on the Videos page, unzip it, open <Code>ShortFlowHelper.exe</Code> and leave its window open. If your
+            browser asks whether this site may reach apps on your device, choose Allow.
           </>
         ),
       },
@@ -70,7 +71,7 @@ const TOPICS: Array<{ title: string; questions: Array<{ q: string; a: ReactNode 
       },
       {
         q: "What does “Waiting” mean in the queue?",
-        a: "YouTube's daily upload limit was reached. The Short stays in the queue and uploads by itself once the limit resets, at midnight Pacific Time.",
+        a: "A daily limit was reached — your channel's own YouTube limit, the number of Shorts each ShortFlow account may publish per day, or ShortFlow's shared YouTube allowance. The Short stays in the queue and uploads by itself once the limit resets, at midnight Pacific Time (around 1 PM in India).",
       },
       {
         q: "I changed my schedule. Did the queue move?",

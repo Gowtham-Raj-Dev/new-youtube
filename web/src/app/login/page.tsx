@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, type ComponentProps, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type FormEvent, type ReactNode } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowRight, CalendarClock, Eye, EyeOff, Lock, Mail, Scissors, Upload, User } from "lucide-react";
 import { BRAND } from "@shortflow/shared";
@@ -8,18 +9,11 @@ import { useAuth } from "@/components/providers/auth-provider";
 import { friendlyAuthError, signInWithEmail, signInWithGoogle, signUpWithEmail } from "@/lib/firebase/auth";
 import { Button } from "@/components/ui/button";
 import { GoogleIcon, Logo, YouTubeIcon } from "@/components/ui/brand-icons";
-import { SAMPLE_CREDIT, SampleShort, type SampleClip } from "@/components/ui/sample-short";
-import { cn } from "@/lib/cn";
+import { SAMPLE_CREDIT } from "@/components/ui/sample-short";
+import { FRAMES } from "@/components/marketing/frames";
+import { ShowcaseFrame } from "@/components/marketing/showcase-frame";
 
 type Mode = "signin" | "signup";
-
-type Frame = { tilt: string; delay: string; clip: SampleClip; time: string; title: string };
-
-const FRAMES: Frame[] = [
-  { tilt: "-6deg", delay: "0s", clip: "butterfly", time: "00:58", title: "Nobody expected this 😱" },
-  { tilt: "4deg", delay: "-2.5s", clip: "dragon", time: "00:45", title: "Part 07 — The twist" },
-  { tilt: "-2deg", delay: "-4.5s", clip: "squirrel", time: "01:00", title: "Watch till the end" },
-];
 
 const STEPS = [
   { icon: Upload, label: "Upload once" },
@@ -28,36 +22,15 @@ const STEPS = [
   { icon: null, label: "Publish to YouTube" },
 ];
 
-function ShowcaseFrame({ frame, index }: { frame: Frame; index: number }) {
-  const bar = useRef<HTMLDivElement>(null);
-  return (
-    <div
-      style={{ ["--tilt" as string]: frame.tilt, animationDelay: frame.delay }}
-      className={cn(
-        "relative aspect-[9/16] w-[150px] animate-float overflow-hidden rounded-2xl border border-white/10 bg-surface-2 shadow-2xl shadow-black/60 xl:w-[170px]",
-        index === 1 && "mt-16",
-      )}
-    >
-      <SampleShort clip={frame.clip} progressRef={bar} />
-      <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/85 via-black/35 to-transparent" />
-      <span className="absolute right-2 top-2 rounded-md bg-black/50 px-1.5 py-0.5 font-mono text-[10px] text-white/80 backdrop-blur">{frame.time}</span>
-      <div className="absolute inset-x-3 bottom-3">
-        <div className="mb-2 h-1 overflow-hidden rounded-full bg-white/20">
-          <div ref={bar} className="h-full rounded-full bg-accent" style={{ width: `${40 + index * 22}%` }} />
-        </div>
-        <p className="text-[11px] font-medium leading-tight text-white drop-shadow">{frame.title}</p>
-      </div>
-    </div>
-  );
-}
-
 function Showcase() {
   return (
     <div className="relative hidden overflow-hidden border-r border-line bg-[radial-gradient(120%_80%_at_20%_0%,#1d1440_0%,#0b0a12_55%,#08080a_100%)] lg:flex lg:flex-col">
       <div aria-hidden className="absolute inset-0 bg-[linear-gradient(rgb(255_255_255/0.025)_1px,transparent_1px),linear-gradient(90deg,rgb(255_255_255/0.025)_1px,transparent_1px)] bg-[size:48px_48px] [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]" />
 
       <div className="relative px-12 pt-10">
-        <Logo />
+        <Link href="/" aria-label={`${BRAND.name} home`}>
+          <Logo />
+        </Link>
       </div>
 
       <div className="relative flex flex-1 items-center justify-center gap-6 px-12">
@@ -145,9 +118,9 @@ export default function LoginPage() {
 
       <div className="flex items-center justify-center px-4 py-12 sm:px-8">
         <div className="w-full max-w-[380px] animate-enter">
-          <div className="mb-8 lg:hidden">
+          <Link href="/" className="mb-8 block w-fit lg:hidden" aria-label={`${BRAND.name} home`}>
             <Logo />
-          </div>
+          </Link>
 
           <h1 className="text-2xl font-semibold tracking-tight">{mode === "signin" ? "Welcome back" : "Create your account"}</h1>
           <p className="mt-1.5 text-sm text-muted">
@@ -215,6 +188,18 @@ export default function LoginPage() {
             >
               {mode === "signin" ? "Create an account" : "Sign in"}
             </button>
+          </p>
+
+          <p className="mt-8 text-center text-[12px] leading-relaxed text-faint">
+            By continuing you agree to the{" "}
+            <Link href="/terms" className="text-muted underline-offset-2 hover:text-text hover:underline">
+              Terms of Service
+            </Link>{" "}
+            and{" "}
+            <Link href="/privacy" className="text-muted underline-offset-2 hover:text-text hover:underline">
+              Privacy Policy
+            </Link>
+            .
           </p>
         </div>
       </div>

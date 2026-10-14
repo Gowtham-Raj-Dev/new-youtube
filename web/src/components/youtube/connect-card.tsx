@@ -1,12 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { Check, LockKeyhole, ShieldCheck, X } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { YouTubeIcon } from "@/components/ui/brand-icons";
 
-const CAN = ["Upload Shorts to your channel", "See your channel name, avatar and subscriber count"];
-const CANNOT = ["Delete or edit your existing videos", "Read comments, messages or your Google password"];
+const CAN = ["Upload the Shorts you queue to your channel", "See your channel name, avatar and subscriber count", "Make a Short it uploaded Public after its copyright check"];
+const CANNOT = ["Delete your videos or edit ones it didn't upload", "Read comments, messages or your Google password"];
 
 export function ConnectCard({ onConnect, connecting }: { onConnect: () => void; connecting: boolean }) {
   return (
@@ -29,6 +30,21 @@ export function ConnectCard({ onConnect, connecting }: { onConnect: () => void; 
           <p className="mt-4 flex items-center gap-2 text-[12.5px] text-faint">
             <LockKeyhole className="size-3.5" />
             Secured by Google OAuth. You can disconnect any time.
+          </p>
+          <p className="mt-2 max-w-md text-[12px] leading-relaxed text-faint">
+            By connecting, you agree to the{" "}
+            <a href="https://www.youtube.com/t/terms" target="_blank" rel="noreferrer" className="text-muted underline-offset-2 hover:underline">
+              YouTube Terms of Service
+            </a>{" "}
+            and our{" "}
+            <Link href="/privacy" className="text-muted underline-offset-2 hover:underline">
+              Privacy Policy
+            </Link>
+            . Google&apos;s use of your data:{" "}
+            <a href="https://policies.google.com/privacy" target="_blank" rel="noreferrer" className="text-muted underline-offset-2 hover:underline">
+              Google Privacy Policy
+            </a>
+            .
           </p>
         </div>
 

@@ -165,3 +165,27 @@ select option {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Privacy and Terms body text: lists with real bullets, and links that read as links. */
+.legal ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+
+.legal li + li {
+  margin-top: 0.5rem;
+}
+
+.legal li::marker {
+  color: var(--accent);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}

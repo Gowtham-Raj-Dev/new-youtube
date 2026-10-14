@@ -12,6 +12,7 @@ export function ConfirmDialog({
   confirmLabel,
   tone = "danger",
   loading,
+  confirmDisabled,
   onConfirm,
   onCancel,
 }: {
@@ -21,6 +22,8 @@ export function ConfirmDialog({
   confirmLabel: string;
   tone?: "danger" | "primary";
   loading?: boolean;
+  /** Keeps the confirm button off, e.g. until the user types a confirmation word. */
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -47,7 +50,7 @@ export function ConfirmDialog({
           <Button variant="ghost" onClick={onCancel} disabled={loading}>
             Cancel
           </Button>
-          <Button variant={tone} onClick={onConfirm} loading={loading}>
+          <Button variant={tone} onClick={onConfirm} loading={loading} disabled={confirmDisabled}>
             {confirmLabel}
           </Button>
         </div>
