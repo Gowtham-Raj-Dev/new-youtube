@@ -18,6 +18,7 @@ const OWNED_COLLECTIONS = [
   COLLECTIONS.banners,
   COLLECTIONS.activityLogs,
   COLLECTIONS.notifications,
+  COLLECTIONS.autoShorts,
 ] as const;
 
 /**

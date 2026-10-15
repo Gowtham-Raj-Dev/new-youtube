@@ -42,3 +42,6 @@ export const YOUTUBE_CLIENT_SECRET = defineSecret("YOUTUBE_OAUTH_CLIENT_SECRET")
 
 /** 32 random bytes, base64. Encrypts stored refresh tokens (AES-256-GCM). */
 export const TOKEN_ENCRYPTION_KEY = defineSecret("TOKEN_ENCRYPTION_KEY");
+
+/** Claude API key for writing the daily AI Shorts' scripts. */
+export const ANTHROPIC_API_KEY = defineSecret("ANTHROPIC_API_KEY");

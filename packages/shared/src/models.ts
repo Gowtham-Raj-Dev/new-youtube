@@ -91,6 +91,8 @@ export const COLLECTIONS = {
   banners: "banners",
   activityLogs: "activityLogs",
   notifications: "notifications",
+  /** Server-written. One per channel: the daily AI Short settings and how the last run went. */
+  autoShorts: "autoShorts",
 } as const;
 
 // ─── Documents ────────────────────────────────────────────────────────────────
@@ -317,6 +319,29 @@ export interface BannerDoc {
   /** The channel it was made on, so it shows only there. Absent on ones made before channels were kept apart. */
   connectionId?: string | null;
 }
+
+/** autoShorts/{connectionId} — written only by the backend; the owner reads it. */
+export interface AutoShortsDoc {
+  userId: string;
+  connectionId: string;
+  enabled: boolean;
+  /** "HH:mm", India time, when each day's Short is published. */
+  publishTime: string;
+  privacy: PrivacyStatus;
+  /** "YYYY-MM-DD" (India) of the last day a Short was made. */
+  lastRunDate: string | null;
+  lastShortId: string | null;
+  lastError: string | null;
+  /** Set while a Short is being made, so two runs never make one at the same time. */
+  runningSince: TimestampLike | null;
+  /** Failed tries on `attemptDate`; it stops for the day after three. */
+  attemptDate: string | null;
+  attempts: number;
+  updatedAt: TimestampLike;
+}
+
+/** The video every AI Short of a channel is filed under on the Videos and Shorts pages. */
+export const autoVideoId = (connectionId: string) => `ai_${connectionId}`;
 
 /** activityLogs/{logId} — written only by the backend. */
 export interface ActivityLogDoc {

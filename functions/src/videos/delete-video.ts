@@ -55,7 +55,8 @@ export const deleteVideo = onCall<{ videoId?: string; mode?: DeleteMode }>({ tim
     shortsDeleted = shorts.size;
   }
 
-  if (mode !== "shorts") {
+  // AI Shorts are filed under a video with no original file.
+  if (mode !== "shorts" && video.storagePath) {
     await bucket.file(video.storagePath).delete({ ignoreNotFound: true });
   }
 

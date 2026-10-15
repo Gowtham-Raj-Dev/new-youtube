@@ -281,6 +281,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /autoShorts/{connectionId} {
+      allow read: if ownsExisting();
+      allow write: if false;
+    }
+
     match /youtubeConnections/{connectionId} {
       allow read: if ownsExisting();
       allow write: if false;
