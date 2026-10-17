@@ -7,6 +7,8 @@ const nextConfig: NextConfig = {
   images: { unoptimized: true },
   transpilePackages: ["@shortflow/shared"],
   reactStrictMode: true,
+  // The dev-only Next.js badge would sit on the sidebar's profile card.
+  devIndicators: { position: "bottom-right" },
 };
 
 export default nextConfig;

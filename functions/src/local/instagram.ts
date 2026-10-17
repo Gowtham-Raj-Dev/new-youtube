@@ -296,8 +296,9 @@ function videosOf(post: any): InstagramVideo[] {
         code: String(post.code ?? ""),
         caption: String(post.caption?.text ?? ""),
         durationSec: durationOf(item),
-        width: Number(best.width) || 0,
-        height: Number(best.height) || 0,
+        // Signed out, the versions often leave their size out; the post's own size is given instead.
+        width: Number(best.width) || Number(item.original_width) || 0,
+        height: Number(best.height) || Number(item.original_height) || 0,
         videoUrl: String(best.url),
         thumbnailUrl: item.image_versions2?.candidates?.[0]?.url ?? null,
         takenAt: (Number(post.taken_at) || 0) * 1000,
@@ -492,6 +493,189 @@ async function readProfile(profile: unknown, cursor: unknown): Promise<Instagram
   else if (viewer === view) closeViewer();
   const known = await readAdded();
   return { username, fullName: view.fullName, videos: videos.map((video) => ({ ...video, added: known.has(video.id) })), next: more ? username : null };
+}
+
+// Links, signed out. A public post's page carries the post itself in the HTML,
+// so it is read without any sign-in. A profile's page, signed out, shows only its
+// newest dozen posts; each of those is then read like a pasted post link.
+
+/** Where the signed-out browser keeps its throwaway profile. */
+const LINK_DIR = join(HOME, "instagram-links");
+/** The signed-out browser is closed once no link has been read for this long. */
+const LINK_IDLE_MS = 3 * 60 * 1000;
+/** How long a post's or profile's page gets to show what it holds. */
+const LINK_WAIT_SEC = 20;
+/** Left between pages, so a long list of links doesn't look like a flood to Instagram. */
+const LINK_GAP_MS = 1500;
+
+export type LinkAnswer =
+  | { kind: "post"; username: string; fullName: string; videos: InstagramVideo[] }
+  /** A profile: the links of its newest posts, to be read one by one. */
+  | { kind: "profile"; username: string; links: string[] };
+
+/** What a pasted link points at, or a 400 if it is neither a post nor a profile. */
+function parseLink(link: unknown): { kind: "post"; code: string } | { kind: "profile"; username: string } {
+  const text = String(link ?? "").trim();
+  if (/instagram\.com/i.test(text)) {
+    let parts: string[] = [];
+    try {
+      parts = new URL(/^https?:/i.test(text) ? text : `https://${text}`).pathname.split("/").filter(Boolean);
+    } catch {
+      // Falls through to the error below.
+    }
+    // instagram.com/reel/<code>, /p/<code>, /tv/<code>, and the same after a username: /<name>/reel/<code>.
+    const at = parts.findIndex((part) => ["p", "reel", "reels", "tv"].includes(part));
+    if (at >= 0 && /^[\w-]{5,40}$/.test(parts[at + 1] ?? "")) return { kind: "post", code: parts[at + 1] };
+  }
+  return { kind: "profile", username: usernameFrom(text) };
+}
+
+interface LinkReader {
+  browser: Browser;
+  page: string;
+  idle: NodeJS.Timeout | null;
+}
+
+let reader: LinkReader | null = null;
+
+function closeReader() {
+  const closing = reader;
+  if (!closing) return;
+  reader = null;
+  if (closing.idle) clearTimeout(closing.idle);
+  closing.browser.close();
+  setTimeout(() => void wipe(LINK_DIR), 1500).unref();
+}
+
+process.once("exit", closeReader);
+
+async function openReader(): Promise<LinkReader> {
+  if (reader && !reader.browser.gone()) return reader;
+  closeReader();
+  await wipe(LINK_DIR);
+  const browser = await openBrowser(LINK_DIR, ["--headless=new", "--window-size=1200,1600", "--mute-audio", "about:blank"]);
+  const { targetId } = (await browser.call("Target.createTarget", { url: "about:blank" })) ?? {};
+  const page = (await browser.call("Target.attachToTarget", { targetId, flatten: true }))?.sessionId ?? "";
+  if (!page) {
+    browser.close();
+    throw new InstagramError(500, "Couldn't open a browser on this PC. Close any stuck Chrome or Edge windows and try again.");
+  }
+  const { userAgent } = (await browser.call("Browser.getVersion")) ?? {};
+  if (userAgent) await browser.call("Emulation.setUserAgentOverride", { userAgent: String(userAgent).replace("HeadlessChrome", "Chrome") }, page);
+  reader = { browser, page, idle: null };
+  return reader;
+}
+
+async function evaluateIn(open: LinkReader, expression: string) {
+  return (await open.browser.call("Runtime.evaluate", { expression, returnByValue: true }, open.page))?.result?.value;
+}
+
+/** Why a signed-out page holds nothing to read, or null if it may still be loading. */
+async function linkProblem(open: LinkReader): Promise<InstagramError | null> {
+  if (open.browser.gone()) return new InstagramError(502, "The hidden browser reading Instagram was closed. Try again.");
+  const url = String((await evaluateIn(open, "location.href")) ?? "");
+  const text = String((await evaluateIn(open, "document.body ? document.body.innerText.slice(0, 4000) : ''")) ?? "");
+  if (/\/accounts\/login|\/challenge/.test(url)) return new InstagramError(429, "Instagram is asking for a log-in right now (too many links read, or a private/age-restricted post). Wait a few minutes and retry, or use the Profile (login) tab.");
+  if (/this page isn.t available|post isn.t available/i.test(text)) return new InstagramError(404, "This post or profile isn't available — deleted, private, or a wrong link.");
+  if (/this account is private/i.test(text)) return new InstagramError(403, "This is a private profile. Its posts can't be read without following it.");
+  return null;
+}
+
+/**
+ * Runs in the page: finds the post with this code among the JSON the page was
+ * served with, trimmed to the fields `videosOf` reads. Null until it is there.
+ */
+const POST_IN_PAGE = (code: string) => `(() => {
+  const code = ${JSON.stringify(code)};
+  const trim = (m) => ({
+    pk: m.pk, id: m.id, code: m.code, media_type: m.media_type, taken_at: m.taken_at,
+    caption: m.caption ? { text: m.caption.text } : null,
+    user: m.user ? { username: m.user.username, full_name: m.user.full_name } : null,
+    video_versions: m.video_versions, video_duration: m.video_duration, original_width: m.original_width, original_height: m.original_height,
+    video_dash_manifest: (String(m.video_dash_manifest || '').match(/mediaPresentationDuration="[^"]*"/) || [''])[0],
+    image_versions2: m.image_versions2 && m.image_versions2.candidates ? { candidates: m.image_versions2.candidates.slice(0, 1) } : null,
+    carousel_media: Array.isArray(m.carousel_media) ? m.carousel_media.map(trim) : null,
+  });
+  let found = null;
+  const visit = (v, depth) => {
+    if (found || !v || typeof v !== 'object' || depth > 80) return;
+    if (Array.isArray(v)) { for (const x of v) visit(x, depth + 1); return; }
+    if (v.code === code && v.media_type !== undefined) { found = trim(v); return; }
+    for (const k in v) visit(v[k], depth + 1);
+  };
+  for (const s of document.scripts) {
+    if (s.textContent.indexOf(code) < 0 || s.textContent.indexOf('media_type') < 0) continue;
+    try { visit(JSON.parse(s.textContent), 0); } catch (e) {}
+    if (found) break;
+  }
+  return found;
+})()`;
+
+/** Runs in the page: the codes of the posts a profile's page links to, its own only. */
+const PROFILE_POSTS_IN_PAGE = (username: string) => `(() => {
+  const own = ${JSON.stringify(username.toLowerCase())};
+  const codes = [];
+  for (const a of document.querySelectorAll('a[href]')) {
+    const m = /^\\/(?:([\\w.]+)\\/)?(?:p|reel|tv)\\/([\\w-]+)\\/?$/.exec(a.getAttribute('href') || '');
+    if (m && (!m[1] || m[1].toLowerCase() === own) && !codes.includes(m[2])) codes.push(m[2]);
+  }
+  return codes;
+})()`;
+
+async function readPost(open: LinkReader, code: string): Promise<LinkAnswer> {
+  await open.browser.call("Page.navigate", { url: `https://www.instagram.com/p/${code}/` }, open.page);
+  for (let waited = 0; waited < LINK_WAIT_SEC * 2; waited++) {
+    await pause(500);
+    const post = await evaluateIn(open, POST_IN_PAGE(code));
+    if (post) return { kind: "post", username: String(post.user?.username ?? ""), fullName: String(post.user?.full_name ?? ""), videos: videosOf(post) };
+    const problem = waited >= 6 ? await linkProblem(open) : null;
+    if (problem) throw problem;
+  }
+  throw new InstagramError(502, "Instagram didn't show this post. Try again in a moment.");
+}
+
+async function readProfileLinks(open: LinkReader, username: string): Promise<LinkAnswer> {
+  await open.browser.call("Page.navigate", { url: `https://www.instagram.com/${username}/` }, open.page);
+  let codes: string[] = [];
+  for (let waited = 0; waited < LINK_WAIT_SEC * 2; waited++) {
+    await pause(500);
+    codes = (await evaluateIn(open, PROFILE_POSTS_IN_PAGE(username))) ?? [];
+    // Posts are drawn a few at a time; a moment more lets the rest of the first dozen show.
+    if (codes.length > 0) {
+      await pause(1500);
+      codes = (await evaluateIn(open, PROFILE_POSTS_IN_PAGE(username))) ?? codes;
+      break;
+    }
+    const problem = waited >= 6 ? await linkProblem(open) : null;
+    if (problem) throw problem;
+    if (waited >= 10 && /no posts yet/i.test(String((await evaluateIn(open, "document.body ? document.body.innerText : ''")) ?? ""))) break;
+  }
+  return { kind: "profile", username, links: codes.map((code) => `https://www.instagram.com/p/${code}/`) };
+}
+
+/** One link at a time, through one signed-out browser. */
+let linkQueue: Promise<unknown> = Promise.resolve();
+
+/** Reads one pasted link without any Instagram sign-in: a post's videos, or a profile's newest post links. */
+export function readLink(link: unknown): Promise<LinkAnswer> {
+  const turn = linkQueue.then(async () => {
+    const target = parseLink(link);
+    const open = await openReader();
+    if (open.idle) clearTimeout(open.idle);
+    try {
+      const answer = target.kind === "post" ? await readPost(open, target.code) : await readProfileLinks(open, target.username);
+      if (answer.kind === "post") {
+        const known = await readAdded();
+        answer.videos = answer.videos.map((video) => ({ ...video, added: known.has(video.id) }));
+      }
+      return answer;
+    } finally {
+      if (reader === open) open.idle = setTimeout(closeReader, LINK_IDLE_MS).unref();
+      await pause(LINK_GAP_MS);
+    }
+  });
+  linkQueue = turn.catch(() => undefined);
+  return turn;
 }
 
 /** Passes one of Instagram's own video or picture files through to the app, which can't fetch them itself. */

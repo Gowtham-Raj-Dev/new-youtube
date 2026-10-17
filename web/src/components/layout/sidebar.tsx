@@ -2,16 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LogOut } from "lucide-react";
-import { BRAND } from "@shortflow/shared";
 import { Logo, YouTubeIcon } from "@/components/ui/brand-icons";
-import { useAuth } from "@/components/providers/auth-provider";
 import { useChannels } from "@/components/providers/channel-provider";
-import { signOut } from "@/lib/firebase/auth";
 import { cn } from "@/lib/cn";
-import { isAdmin } from "@/lib/admin";
-import { ADMIN_NAV, FOOTER_NAV, MAIN_NAV, isActive, type NavItem } from "./nav";
-import { Avatar } from "./avatar";
+import { useAuth } from "@/components/providers/auth-provider";
+import { MAIN_NAV, isActive, type NavItem } from "./nav";
+import { ProfileMenu } from "./profile-menu";
 
 function NavLink({ item, pathname, onNavigate }: { item: NavItem; pathname: string; onNavigate?: () => void }) {
   const active = isActive(pathname, item.href);
@@ -57,35 +53,10 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         ))}
       </nav>
 
-      <div className="space-y-0.5 border-t border-line px-3 py-3">
-        {[...FOOTER_NAV, ...(isAdmin(user) ? ADMIN_NAV : [])].map((item) => (
-          <NavLink key={item.href} item={item} pathname={pathname} onNavigate={onNavigate} />
-        ))}
-      </div>
-
-      <p className="flex gap-3 px-6 pb-2 text-[11px] text-faint">
-        <Link href="/privacy" className="transition hover:text-muted">
-          Privacy
-        </Link>
-        <Link href="/terms" className="transition hover:text-muted">
-          Terms
-        </Link>
-      </p>
-
+      {/* Settings, Help, the owner tools and sign-out open from the profile card. */}
       {user && (
-        <div className="flex items-center gap-3 border-t border-line px-4 py-3.5">
-          <Avatar name={user.displayName ?? user.email} src={user.photoURL} />
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-[13px] font-medium">{user.displayName ?? "Creator"}</p>
-            <p className="truncate text-[11.5px] text-faint">{user.email}</p>
-          </div>
-          <button
-            onClick={() => void signOut()}
-            className="grid size-8 place-items-center rounded-lg text-faint transition hover:bg-white/[0.05] hover:text-text"
-            title={`Sign out of ${BRAND.name}`}
-          >
-            <LogOut className="size-4" />
-          </button>
+        <div className="border-t border-line p-3">
+          <ProfileMenu user={user} placement="sidebar" />
         </div>
       )}
     </div>

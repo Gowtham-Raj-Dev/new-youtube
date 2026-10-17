@@ -16,6 +16,8 @@ export interface InstagramVideo {
   takenAt: number;
   /** Already added as a Short from this PC. Left out by a helper from before this was remembered. */
   added?: boolean;
+  /** Whose post it is, when videos from several profiles are listed together (pasted links). */
+  username?: string;
 }
 
 export interface InstagramPage {
@@ -89,6 +91,21 @@ export function listInstagramVideos(profile: string, cursor?: string | null) {
   return ask<InstagramPage>("/instagram/profile", json({ profile, cursor: cursor ?? null }));
 }
 
+export type InstagramLinkAnswer =
+  | { kind: "post"; username: string; fullName: string; videos: InstagramVideo[] }
+  /** A profile: signed out, Instagram only shows its newest posts; these are their links, to be read one by one. */
+  | { kind: "profile"; username: string; links: string[] };
+
+/** Reads one pasted post, reel or profile link through the helper, without any Instagram sign-in. */
+export function readInstagramLink(link: string) {
+  return ask<InstagramLinkAnswer>("/instagram/link", json({ link }));
+}
+
+/** The links in a pasted block of text: one per line, or separated by spaces or commas. Repeats are dropped. */
+export function splitLinks(text: string) {
+  return [...new Set(text.split(/[\s,]+/).map((part) => part.trim()).filter((part) => /instagram\.com\//i.test(part) || /^@?[A-Za-z0-9._]{1,30}$/.test(part)))];
+}
+
 /** Has the helper remember these videos as added to Shorts, so they are left out the next time their profile is looked at. */
 export async function markInstagramAdded(ids: string[]) {
   await ask("/instagram/added", json({ ids }));
@@ -121,5 +138,5 @@ export async function fetchInstagramVideo(video: InstagramVideo, username: strin
     throw new InstagramError("The PC helper isn't running. Open ShortFlowHelper.exe, leave its window open, and try again.", "offline");
   }
   if (!res.ok) throw new InstagramError("Instagram didn't hand over the file. Show the profile's videos again and retry.");
-  return new File([await res.blob()], `${instagramTitle(video, username)}.mp4`, { type: "video/mp4" });
+  return new File([await res.blob()], `${instagramTitle(video, video.username || username)}.mp4`, { type: "video/mp4" });
 }
