@@ -1,5 +1,5 @@
 // YouTube resumable upload (videos.insert). Plain fetch — no SDK needed.
-import type { PrivacyStatus } from "@shortflow/shared";
+import { fitYoutubeTags, type PrivacyStatus } from "@shortflow/shared";
 
 const UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos";
 
@@ -83,7 +83,8 @@ async function startSession(accessToken: string, metadata: UploadMetadata, sourc
       snippet: {
         title: metadata.title,
         description: metadata.description,
-        tags: metadata.tags,
+        // Last guard: drop the keywords YouTube would reject the whole upload over.
+        tags: fitYoutubeTags(metadata.tags),
         categoryId: metadata.categoryId,
       },
       status: { privacyStatus: metadata.privacy, selfDeclaredMadeForKids: false },

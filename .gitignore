@@ -37,3 +37,6 @@ functions/.env.local
 
 # the downloadable PC helper, built by `npm run pack-helper`
 web/public/downloads/
+
+# Moolai Illa Machan videos and voice takes (local only)
+/Moolai Illa Machan/

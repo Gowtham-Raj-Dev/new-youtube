@@ -14,6 +14,8 @@ export interface SavedReaction {
   name: string;
   file: File;
   addedAt: number;
+  /** The channel it was added on, so it shows only there. Absent on ones added before channels were kept apart. */
+  connectionId?: string | null;
 }
 
 function open(): Promise<IDBDatabase> {
@@ -49,8 +51,8 @@ export async function listReactions(): Promise<SavedReaction[]> {
 }
 
 /** Keeps `file` for next time. If the browser refuses, it still comes back, usable until the page is closed. */
-export async function saveReaction(file: File): Promise<SavedReaction> {
-  const saved: SavedReaction = { id: crypto.randomUUID(), name: file.name.replace(/\.[^.]+$/, ""), file, addedAt: Date.now() };
+export async function saveReaction(file: File, connectionId?: string): Promise<SavedReaction> {
+  const saved: SavedReaction = { id: crypto.randomUUID(), name: file.name.replace(/\.[^.]+$/, ""), file, addedAt: Date.now(), connectionId: connectionId ?? null };
   await store("readwrite", (videos) => videos.put(saved)).catch(() => undefined);
   return saved;
 }

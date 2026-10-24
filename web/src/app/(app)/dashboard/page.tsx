@@ -3,9 +3,8 @@
 import { ArrowRight, CalendarClock, Film, Upload } from "lucide-react";
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useChannelCounts, useChannelVideos, useChannels } from "@/components/providers/channel-provider";
+import { useChannelCounts, useChannelUploads, useChannelVideos, useChannels } from "@/components/providers/channel-provider";
 import { useSchedules, useSettings, useShorts, useUserDoc } from "@/lib/firebase/hooks";
-import { useUploads } from "@/lib/uploads/upload-provider";
 import { VideoCard, VideoCardSkeleton } from "@/components/video/video-card";
 import { formatInZone, greetingFor, toDate } from "@/lib/time";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -41,7 +40,7 @@ function RecentVideos({ uid, timezone }: { uid: string; timezone: string }) {
   // Other channels' videos are left out, so with several channels more are read to still find the newest four.
   const { data: recent, loading } = useChannelVideos(uid, multi ? undefined : 4);
   const videos = recent.slice(0, 4);
-  const { byVideoId } = useUploads();
+  const { byVideoId } = useChannelUploads();
 
   return (
     <Card>

@@ -9,6 +9,7 @@ import {
   shortFileName,
   shortIdFor,
   storagePaths,
+  youtubeTagChars,
   type BannerDoc,
   type BannerPosition,
   type PrivacyStatus,
@@ -58,9 +59,9 @@ export function parseTags(input: string): string[] {
   return tags;
 }
 
-/** How YouTube counts keywords towards its 500-character limit (commas included). */
+/** How YouTube counts keywords towards its 500-character limit: commas, plus quotes around multi-word tags. */
 export function tagChars(tags: string[]) {
-  return tags.join(",").length;
+  return youtubeTagChars(tags);
 }
 
 const CALL_LIMIT = 50;

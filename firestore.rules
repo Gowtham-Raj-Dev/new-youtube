@@ -282,7 +282,8 @@ service cloud.firestore {
     }
 
     match /autoShorts/{connectionId} {
-      allow read: if ownsExisting();
+      // A channel that isn't set up yet reads as missing rather than as an error; there is nothing in it to see.
+      allow read: if ownsExisting() || (signedIn() && resource == null);
       allow write: if false;
     }
 

@@ -5,11 +5,10 @@ import Link from "next/link";
 import { Film, Sparkles } from "lucide-react";
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE, type VideoDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useChannelBanners, useChannelVideos, useChannels } from "@/components/providers/channel-provider";
+import { useChannelBanners, useChannelUploads, useChannelVideos, useChannelWork, useChannels } from "@/components/providers/channel-provider";
 import { useSettings, useShorts, useUserDoc, type WithId } from "@/lib/firebase/hooks";
-import { useUploads, type RejectedFile } from "@/lib/uploads/upload-provider";
+import type { RejectedFile } from "@/lib/uploads/upload-provider";
 import { matchesFilter, type VideoFilter } from "@/lib/videos";
-import { useWork } from "@/lib/work/work-provider";
 import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -35,7 +34,7 @@ export default function VideosPage() {
   const { data: shorts } = useShorts(user?.uid);
   const { data: settings } = useSettings(user?.uid);
   const { data: banners } = useChannelBanners(user?.uid);
-  const { splits, dismissSplit } = useWork();
+  const { splits, dismissSplit } = useChannelWork();
   const finished = [...splits.values()].filter((job) => job.status !== "working");
 
   // Shorts are registered by the browser, so the count comes from the Shorts themselves.
@@ -44,7 +43,7 @@ export default function VideosPage() {
     for (const short of shorts) perVideo.set(short.videoId, (perVideo.get(short.videoId) ?? 0) + 1);
     return storedVideos.map((video) => ({ ...video, shortsCount: perVideo.get(video.id) ?? 0 }));
   }, [storedVideos, shorts]);
-  const { addFiles, byVideoId, cancel, retry, uploads } = useUploads();
+  const { addFiles, byVideoId, cancel, retry, uploads } = useChannelUploads();
   const [filter, setFilter] = useState<VideoFilter>("all");
   const [rejected, setRejected] = useState<RejectedFile[]>([]);
   const [deleting, setDeleting] = useState<WithId<VideoDoc> | null>(null);

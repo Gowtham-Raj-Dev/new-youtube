@@ -11,3 +11,4 @@ export { cleanupStaleUploads } from "./videos/cleanup";
 export { adminUsage, adminRemoveLeftovers } from "./admin/usage";
 export { deleteAccount } from "./account/delete-account";
 export { saveAutoShorts, makeAutoShortNow, autoShortsDaily } from "./auto/functions";
+export { budgetGuard } from "./auto/budget";

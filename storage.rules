@@ -70,6 +70,22 @@ service firebase.storage {
       allow delete: if isOwner(uid);
     }
 
+    // Ending clips for a channel's AI Shorts: uploaded, listed and deleted by their owner.
+    match /users/{uid}/autoShorts/{connectionId}/{fileName} {
+      allow read: if isOwner(uid);
+
+      allow create: if isOwner(uid)
+        && fileName.matches('ending-[A-Za-z0-9_-]+[.]mp4')
+        && request.resource.size > 0
+        // 30 MiB — keep in sync with AUTO_SHORTS_ENDING_MAX_BYTES.
+        && request.resource.size <= 30 * 1024 * 1024
+        && request.resource.contentType == 'video/mp4'
+        && firestore.get(/databases/(default)/documents/youtubeConnections/$(connectionId)).data.userId == uid;
+
+      allow update: if false;
+      allow delete: if isOwner(uid);
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

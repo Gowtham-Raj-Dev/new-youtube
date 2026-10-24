@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { Check, Clapperboard, Download, ExternalLink, FolderUp, KeyRound, Link2, LogIn, RefreshCw, Search, Upload } from "lucide-react";
 import { DEFAULT_SETTINGS, formatDuration } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useChannelBanners, useChannels } from "@/components/providers/channel-provider";
+import { useChannelBanners, useChannelWork, useChannels } from "@/components/providers/channel-provider";
 import { useSettings } from "@/lib/firebase/hooks";
 import {
   InstagramError,
@@ -28,7 +28,7 @@ import { ACCEPTED_VIDEO_TYPES } from "@shortflow/shared";
 import { Segmented } from "@/components/ui/segmented";
 import { HELPER_DOWNLOAD } from "@/lib/local-splitter";
 import { isAdmin } from "@/lib/admin";
-import { describeImport, importPercent, useWork } from "@/lib/work/work-provider";
+import { describeImport, importPercent } from "@/lib/work/work-provider";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, ButtonLink } from "@/components/ui/button";
@@ -82,7 +82,7 @@ function InstagramDownloader() {
   const { active, hrefFor } = useChannels();
   const { data: settings } = useSettings(uid);
   const { data: banners } = useChannelBanners(uid);
-  const { importJob, startImport, dismissImport } = useWork();
+  const { importJob, startImport, dismissImport } = useChannelWork();
 
   /** Everything here runs through the PC helper; there is no doing it in the browser. */
   const [helper, setHelper] = useState<"checking" | "ready" | "offline" | "outdated">("checking");
@@ -577,13 +577,13 @@ function InstagramDownloader() {
                   {allPicked ? "Clear selection" : usable.length > MAX_AT_ONCE ? `Select first ${MAX_AT_ONCE}` : "Select all"}
                 </Button>
               )}
-              <Button icon={<FolderUp className="size-4" />} loading={fetching !== null} disabled={chosen.length === 0 || chosen.length > MAX_AT_ONCE || importing !== null || !uid} onClick={() => void download()}>
+              <Button icon={<FolderUp className="size-4" />} loading={fetching !== null} disabled={chosen.length === 0 || chosen.length > MAX_AT_ONCE || !uid} onClick={() => void download()}>
                 {fetching ? `Downloading ${fetching.done + 1} / ${fetching.total}` : chosen.length > 0 ? `Download ${chosen.length} & add to Shorts` : "Download & add to Shorts"}
               </Button>
             </div>
           </div>
           {chosen.length > MAX_AT_ONCE && <p className="text-[12.5px] text-warning">Pick up to {MAX_AT_ONCE} at a time — they are held in this browser&apos;s memory until they are saved.</p>}
-          {importing !== null && chosen.length > 0 && <p className="text-[12.5px] text-muted">Shorts are still being added from the last batch. This one can start once that finishes.</p>}
+          {importing !== null && chosen.length > 0 && <p className="text-[12.5px] text-muted">Shorts are still being added from the last batch. These join the line and are added right after it.</p>}
 
           {listed.videos.length === 0 ? (
             <Card>

@@ -6,6 +6,8 @@ import type { ScheduleDoc, ShortDoc, YoutubeConnectionDoc } from "@shortflow/sha
 import { useAuth } from "@/components/providers/auth-provider";
 import { useDashboardCounts, type DashboardCounts } from "@/lib/firebase/counts";
 import { useAllSchedules, useBanners, useShorts, useVideos, useYoutubeConnections, type WithId } from "@/lib/firebase/hooks";
+import { useUploads } from "@/lib/uploads/upload-provider";
+import { useWork } from "@/lib/work/work-provider";
 
 /** What says which channel something belongs to — see `connectionId` in the shared models. */
 interface Tagged {
@@ -157,6 +159,30 @@ export function useChannelShorts(uid: string | undefined, count?: number) {
 /** The banners of the channel the app is on. */
 export function useChannelBanners(uid: string | undefined) {
   return useKept(useBanners(uid), useChannels().owns);
+}
+
+/** The uploads running on the channel the app is on; another channel's uploads keep going but don't show here. */
+export function useChannelUploads() {
+  const uploads = useUploads();
+  const { owns } = useChannels();
+  return useMemo(() => {
+    const kept = uploads.uploads.filter(owns);
+    return { ...uploads, uploads: kept, byVideoId: new Map(kept.map((u) => [u.videoId, u])) };
+  }, [uploads, owns]);
+}
+
+/** The background jobs (adding Shorts, cutting videos) of the channel the app is on. */
+export function useChannelWork() {
+  const work = useWork();
+  const { owns } = useChannels();
+  return useMemo(
+    () => ({
+      ...work,
+      importJob: work.importJob && owns(work.importJob) ? work.importJob : null,
+      splits: new Map([...work.splits].filter(([, job]) => owns(job))),
+    }),
+    [work, owns],
+  );
 }
 
 /**

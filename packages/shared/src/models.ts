@@ -325,20 +325,40 @@ export interface AutoShortsDoc {
   userId: string;
   connectionId: string;
   enabled: boolean;
-  /** "HH:mm", India time, when each day's Short is published. */
-  publishTime: string;
+  /** "HH:mm", India time: one Short is published at each, every day. */
+  publishTimes: string[];
   privacy: PrivacyStatus;
-  /** "YYYY-MM-DD" (India) of the last day a Short was made. */
-  lastRunDate: string | null;
+  /** The next script to use from the content bank; it wraps round at the end. */
+  nextScript: number;
+  /** "YYYY-MM-DD" (India) that `doneSlots` is about. */
+  slotDate: string | null;
+  /** The publish times on `slotDate` that already have their Short. */
+  doneSlots: string[];
   lastShortId: string | null;
   lastError: string | null;
   /** Set while a Short is being made, so two runs never make one at the same time. */
   runningSince: TimestampLike | null;
-  /** Failed tries on `attemptDate`; it stops for the day after three. */
+  /** Failed tries on `attemptDate`; it stops for the day after `AUTO_SHORTS_MAX_ATTEMPTS`. */
   attemptDate: string | null;
   attempts: number;
+  /** Why the budget guard switched it off, until it is switched on again. */
+  pausedReason: string | null;
   updatedAt: TimestampLike;
 }
+
+/**
+ * Publishing slots must fall on :00 or :30 between 5 AM and 8:30 PM India time,
+ * the hours the publish sweep runs (see publishDueShorts).
+ */
+export const AUTO_SHORTS_TIME_RE = /^(0[5-9]|1\d|20):(00|30)$/;
+export const AUTO_SHORTS_DEFAULT_TIMES = ["08:00", "12:30", "17:30", "20:30"];
+export const AUTO_SHORTS_MAX_SLOTS = 4;
+export const AUTO_SHORTS_MAX_ATTEMPTS = 6;
+
+/** Short clips that may close every AI Short, e.g. a laughing reaction. users/{uid}/autoShorts/{connectionId}/ending-{n}.mp4 */
+export const AUTO_SHORTS_ENDING_MAX_BYTES = 30 * 1024 * 1024;
+/** Only this much of an ending clip is used. */
+export const AUTO_SHORTS_ENDING_MAX_SEC = 6;
 
 /** The video every AI Short of a channel is filed under on the Videos and Shorts pages. */
 export const autoVideoId = (connectionId: string) => `ai_${connectionId}`;

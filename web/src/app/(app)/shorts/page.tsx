@@ -2,14 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { CalendarClock, Clapperboard, Download, FolderUp, ListPlus, ShieldCheck, Trash2, Upload } from "lucide-react";
+import { CalendarClock, Clapperboard, Download, FolderUp, ListPlus, ShieldCheck, Shuffle, Trash2, Undo2, Upload } from "lucide-react";
 import { DEFAULT_SETTINGS, directUploadVideoId, slotRulesFrom, type ShortDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useChannelBanners, useChannelShorts, useChannels } from "@/components/providers/channel-provider";
+import { useChannelBanners, useChannelShorts, useChannelWork, useChannels } from "@/components/providers/channel-provider";
 import { useSchedules, useSettings, useVideos, type WithId } from "@/lib/firebase/hooks";
 import { describeSchedule, previewSlots, scheduleFacts } from "@/lib/schedule";
 import { canQueue, checkYouTubeStatus, deleteShorts, downloadShorts, isBlockedOnYouTube, matchesShortFilter, needsYouTubeCheck, queueShorts, type ShortFilter } from "@/lib/shorts";
-import { describeImport, useWork } from "@/lib/work/work-provider";
+import { describeImport } from "@/lib/work/work-provider";
 import { friendlyCallableError } from "@/lib/youtube";
 import { formatInZone } from "@/lib/time";
 import { Alert } from "@/components/ui/alert";
@@ -64,12 +64,27 @@ export default function GeneratedShortsPage() {
   // Shorts uploaded ready-made from the user's files belong to no video; they get a group of their own, on top.
   const directId = uid ? directUploadVideoId(uid) : "";
 
-  // Newest video first, and within a video in the order the parts play.
+  /** A random place for each Short, set by Shuffle. Kept per channel: switching channel goes back to the usual order. */
+  const [shuffle, setShuffle] = useState<{ channel: string | undefined; places: Map<string, number> } | null>(null);
+  const places = shuffle && shuffle.channel === active?.id ? shuffle.places : null;
+
+  function shuffleAll() {
+    const ids = shorts.map((s) => s.id);
+    for (let i = ids.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+    }
+    setShuffle({ channel: active?.id, places: new Map(ids.map((id, i) => [id, i])) });
+  }
+
+  // Newest video first, and within a video in the order the parts play — or, once shuffled, the shuffled order.
+  // Queueing hands out slots in this order, so it is also the order they go out in.
   const ordered = useMemo(() => {
+    if (places) return [...shorts].sort((a, b) => (places.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (places.get(b.id) ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id));
     const videoRank = new Map(videos.map((v, i) => [v.id, i]));
     const rank = (s: ShortDoc) => (s.videoId === directId ? -1 : (videoRank.get(s.videoId) ?? Number.MAX_SAFE_INTEGER));
     return [...shorts].sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
-  }, [shorts, videos, directId]);
+  }, [shorts, videos, directId, places]);
 
   const counts = useMemo(
     () => Object.fromEntries(FILTERS.map((f) => [f.id, shorts.filter((s) => matchesShortFilter(s, f.id)).length])) as Record<ShortFilter, number>,
@@ -77,6 +92,11 @@ export default function GeneratedShortsPage() {
   );
 
   const groups = useMemo(() => {
+    // Shuffled, the videos are mixed together, so they show as one list in the order they will go out.
+    if (places) {
+      const items = ordered.filter((s) => matchesShortFilter(s, filter));
+      return items.length > 0 ? [{ videoId: "shuffled", title: "Shuffled — queued in this order", items }] : [];
+    }
     const titles = new Map(videos.map((v) => [v.id, v.title]));
     const byVideo = new Map<string, WithId<ShortDoc>[]>();
     for (const short of ordered) {
@@ -84,7 +104,7 @@ export default function GeneratedShortsPage() {
       byVideo.set(short.videoId, [...(byVideo.get(short.videoId) ?? []), short]);
     }
     return [...byVideo].map(([videoId, items]) => ({ videoId, title: videoId === directId ? "Uploaded from your files" : (titles.get(videoId) ?? "Deleted video"), items }));
-  }, [ordered, videos, filter, directId]);
+  }, [ordered, videos, filter, directId, places]);
 
   const picked = ordered.filter((s) => selected.has(s.id) && canQueue(s)).map((s) => s.id);
   // A video with one blocked Short is copyrighted material: its other parts are flagged and left out of "all".
@@ -109,7 +129,7 @@ export default function GeneratedShortsPage() {
 
   const fileInput = useRef<HTMLInputElement>(null);
   // Adding Shorts from files runs app-wide, so it carries on if the user opens another page.
-  const { importJob, startImport, dismissImport } = useWork();
+  const { importJob, startImport, dismissImport } = useChannelWork();
   const importing = importJob?.status === "working" ? importJob.progress : null;
   const importingNow = importing !== null;
   const importNotice = importJob && importJob.status !== "working" ? describeImport(importJob) : null;
@@ -246,7 +266,7 @@ export default function GeneratedShortsPage() {
         <div className="flex shrink-0 flex-col gap-2 lg:items-end">
           {/* Top row: bring Shorts in, clear them out, check them. Below it: send them on. */}
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" icon={<FolderUp className="size-4" />} loading={importingNow} disabled={!uid} onClick={() => fileInput.current?.click()}>
+            <Button variant="secondary" icon={<FolderUp className={cn("size-4", importingNow && "animate-pulse")} />} disabled={!uid} onClick={() => fileInput.current?.click()}>
               {importing
                 ? importing.rendering
                   ? `Rendering ${importing.index + 1} / ${importing.total}`
@@ -266,6 +286,14 @@ export default function GeneratedShortsPage() {
           </div>
           {shorts.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
+              {places && (
+                <Button variant="ghost" icon={<Undo2 className="size-4" />} onClick={() => setShuffle(null)}>
+                  Original order
+                </Button>
+              )}
+              <Button variant="secondary" icon={<Shuffle className="size-4" />} disabled={shorts.length < 2 || busy} onClick={shuffleAll}>
+                {places ? "Shuffle again" : "Shuffle"}
+              </Button>
               <Button variant="secondary" icon={<Download className="size-4" />} loading={downloading} disabled={toDownload.length === 0} onClick={download}>
                 {picked.length > 0 ? `Download ${toDownload.length}` : `Download all ${toDownload.length}`}
               </Button>

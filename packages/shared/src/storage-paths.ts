@@ -6,6 +6,7 @@
  * users/{uid}/shorts/{shortId}/video.mp4
  * users/{uid}/shorts/{shortId}/thumbnail.jpg
  * users/{uid}/banners/{bannerId}.{png|jpg|webp}
+ * users/{uid}/autoShorts/{connectionId}/ending-{id}.mp4
  */
 
 export const ACCEPTED_VIDEO_TYPES = {
@@ -42,4 +43,6 @@ export const storagePaths = {
   shortVideo: (uid: string, shortId: string) => `users/${uid}/shorts/${shortId}/video.mp4`,
   shortThumbnail: (uid: string, shortId: string) => `users/${uid}/shorts/${shortId}/thumbnail.jpg`,
   banner: (uid: string, bannerId: string, extension: string) => `users/${uid}/banners/${bannerId}.${extension}`,
+  autoShortsEndings: (uid: string, connectionId: string) => `users/${uid}/autoShorts/${connectionId}/`,
+  autoShortsEnding: (uid: string, connectionId: string, id: string) => `users/${uid}/autoShorts/${connectionId}/ending-${id}.mp4`,
 } as const;

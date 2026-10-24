@@ -15,6 +15,7 @@ import {
 import {
   COLLECTIONS,
   type ActivityLogDoc,
+  type AutoShortsDoc,
   type BannerDoc,
   type NotificationDoc,
   type ScheduleDoc,
@@ -116,6 +117,11 @@ export function useBanners(uid: string | undefined) {
   const state = useLiveQuery<BannerDoc>(uid ? `banners:${uid}` : null, () => query(collection(firebase().db, COLLECTIONS.banners), where("userId", "==", uid)));
   const data = [...state.data].sort((a, b) => (b.createdAt?.toMillis?.() ?? Infinity) - (a.createdAt?.toMillis?.() ?? Infinity));
   return { ...state, data };
+}
+
+/** A channel's daily AI Shorts settings and how the last run went; null until they are first saved. */
+export function useAutoShorts(connectionId: string | undefined) {
+  return useLiveDoc<AutoShortsDoc>(connectionId ? `autoShorts:${connectionId}` : null, () => doc(firebase().db, COLLECTIONS.autoShorts, connectionId!));
 }
 
 export function useYoutubeConnections(uid: string | undefined) {

@@ -57,6 +57,25 @@ const checks = {
     if (status === 200) return [false, "exists, but rules allow anonymous listing (test mode?)"];
     return [false, `unexpected ${status}`];
   },
+  async "Storage: CORS upload methods"() {
+    const res = await fetch(`https://firebasestorage.googleapis.com/v0/b/${bucket}/o`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type,x-goog-upload-protocol,x-goog-resumable",
+      },
+    });
+    const allowMethods = res.headers.get("access-control-allow-methods") || "";
+    const methods = allowMethods.split(",").map((m) => m.trim().toUpperCase());
+    if (methods.includes("POST") || methods.includes("*")) {
+      return [true, `CORS permits uploads (${allowMethods}) ✓`];
+    }
+    return [
+      false,
+      `CORS allows: "${allowMethods || 'none'}". Must include POST/PUT or uploads fail with storage/unknown.`,
+    ];
+  },
 };
 
 let allOk = true;

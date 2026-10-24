@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Ban, Film, X } from "lucide-react";
 import {
@@ -20,6 +20,7 @@ import {
 import type { ReactionChoice } from "@/lib/shorts";
 import { deleteReaction, listReactions, readLastReaction, rememberLastReaction, saveReaction, type SavedReaction } from "@/lib/reactions";
 import { chip } from "@/components/banner/banner-picker";
+import { useChannels } from "@/components/providers/channel-provider";
 import { cn } from "@/lib/cn";
 
 const SLOT_LABELS: Record<ReactionPosition, string> = { top: "Top video", bottom: "Bottom video" };
@@ -49,7 +50,10 @@ export function bannersPercentOf(chosen: Partial<Record<BannerPosition, BannerDo
  */
 export function useReactionSetup(bannersPercent = 0, autoSave = false) {
   const [last] = useState(readLastReaction);
-  const [saved, setSaved] = useState<SavedReaction[]>([]);
+  const { active, owns } = useChannels();
+  const [all, setSaved] = useState<SavedReaction[]>([]);
+  // Each channel has its own reaction videos.
+  const saved = useMemo(() => all.filter(owns), [all, owns]);
   const [id, setId] = useState<string | null>(last.id);
   const [unreadableId, setUnreadableId] = useState<string | null>(null);
   const [position, setPosition] = useState<ReactionPosition>(last.position);
@@ -79,7 +83,7 @@ export function useReactionSetup(bannersPercent = 0, autoSave = false) {
   }, [autoSave, remember]);
 
   async function add(picked: File) {
-    const added = await saveReaction(picked);
+    const added = await saveReaction(picked, active?.id);
     setSaved((list) => [added, ...list]);
     setId(added.id);
   }

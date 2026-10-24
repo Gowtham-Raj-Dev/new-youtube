@@ -19,6 +19,8 @@ export interface UploadItem {
   etaSec: number | null;
   state: UploadState;
   error: string | null;
+  /** The channel it is uploaded on, so it shows only there. */
+  connectionId: string | null;
 }
 
 export interface RejectedFile {
@@ -142,6 +144,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         (error) => {
           tasks.current.delete(videoId);
           if (error instanceof FirebaseError && error.code === "storage/canceled") return;
+          console.error("Storage upload failed:", error, (error as { customData?: { serverResponse?: unknown } })?.customData?.serverResponse);
           patch(videoId, { state: "error", error: friendlyUploadError(error), speed: 0, etaSec: null });
         },
         () => {
@@ -175,6 +178,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
           etaSec: null,
           state: "uploading",
           error: null,
+          connectionId: connectionId ?? null,
         }),
       );
 

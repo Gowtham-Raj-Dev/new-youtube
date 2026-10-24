@@ -5,8 +5,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { CircleAlert, CircleCheck, CloudUpload, FolderUp, Scissors, X } from "lucide-react";
 import { formatBytes } from "@shortflow/shared";
-import { useUploads } from "@/lib/uploads/upload-provider";
-import { describeImport, importPercent, useWork } from "@/lib/work/work-provider";
+import { useChannelUploads, useChannelWork } from "@/components/providers/channel-provider";
+import { describeImport, importPercent } from "@/lib/work/work-provider";
 import { cn } from "@/lib/cn";
 
 /** One job in the tray. Clicking it opens the page the job belongs to; finished ones can be dismissed. */
@@ -59,8 +59,9 @@ function TrayCard({
  * page that already shows it.
  */
 export function UploadTray() {
-  const { uploads } = useUploads();
-  const { importJob, dismissImport, splits, dismissSplit } = useWork();
+  // Only the jobs of the channel on screen; another channel's keep running and show when switched back to it.
+  const { uploads } = useChannelUploads();
+  const { importJob, dismissImport, splits, dismissSplit } = useChannelWork();
   const pathname = usePathname();
   const onVideos = pathname.startsWith("/videos");
   const onShorts = pathname.startsWith("/shorts");

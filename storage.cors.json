@@ -1,8 +1,23 @@
 [
   {
-    "origin": ["https://fir-4b5dc.web.app", "https://fir-4b5dc.firebaseapp.com", "http://localhost:3000", "http://127.0.0.1:3000"],
-    "method": ["GET", "HEAD"],
-    "responseHeader": ["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"],
+    "origin": [
+      "https://fir-4b5dc.web.app",
+      "https://fir-4b5dc.firebaseapp.com",
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "*"
+    ],
+    "method": ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"],
+    "responseHeader": [
+      "Content-Type",
+      "Content-Length",
+      "Content-Range",
+      "Accept-Ranges",
+      "x-goog-resumable",
+      "x-goog-upload-status",
+      "ETag"
+    ],
     "maxAgeSeconds": 3600
   }
 ]
+

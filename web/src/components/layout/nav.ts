@@ -11,6 +11,7 @@ import {
   LifeBuoy,
   PanelTop,
   Settings,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 
@@ -39,6 +40,7 @@ export const FOOTER_NAV: NavItem[] = [
 
 /** Only shown to the owners of the app. */
 export const ADMIN_NAV: NavItem[] = [
+  { href: "/ai-shorts", label: "AI Shorts", icon: Sparkles },
   { href: "/instagram", label: "Insta Downloader", icon: Download },
   { href: "/usage", label: "Usage", icon: Gauge },
 ];

@@ -1,448 +1,89 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import { GlobalFonts, createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
-import { SHORT_HEIGHT as H, SHORT_WIDTH as W } from "@shortflow/shared";
+import { AUTO_SHORTS_ENDING_MAX_SEC, SHORT_HEIGHT as H, SHORT_WIDTH as W } from "@shortflow/shared";
+import type { LineKind } from "./bank";
+import { INK, talkEnvelope, type Scene } from "./cartoon";
+import { calmMusic } from "./music";
+import { sfxTrack, type SfxEvent } from "./sfx";
 import type { Narration } from "./voice";
-import type { Palette } from "./palettes";
 
 const FPS = 30;
 const BOLD = "ShortFlow Bold";
 const SEMI = "ShortFlow Semi";
+const EMOJI = "ShortFlow Emoji";
+/** Poppins for the words, with colour emoji for anything it doesn't have. */
+const BOLD_STACK = `"${BOLD}", "${EMOJI}"`;
+/** Who is talking, drawn before "Amma:", "Boss:" and the like. */
+const SPEAKERS: Record<string, string> = {
+  amma: "👩", appa: "👨", naan: "🙋", thambi: "🙋", boss: "😎", friend: "🧑", avan: "🧑", hr: "💼", manager: "👔",
+  doctor: "🩺", relatives: "👪", mama: "🧔", salesman: "🧑‍💼", friends: "👬", ellaarum: "👥",
+  machan: "🤪", colleague: "🧑‍💻", uncle: "👴", trainer: "🧑‍🏫", kadaikaarar: "🧑‍🍳",
+  mechanic: "🔧", thatha: "👴", sir: "👔", youtuber: "🎙️",
+};
+const YELLOW = "#FFD400";
+const CYAN = "#3EE8FF";
+/** Subtitle size, the punch line's, and the widest a line may be. */
+const SIZE = 84;
+const PUNCH_SIZE = 76;
+const MAX_W = 900;
+const CENTRE_Y = H * 0.47;
 
-/** Text on screen, with the moment it is spoken. */
-export interface Scene {
+/** Where the subtitles sit, and whether they need an outline to read over a picture. */
+interface Layout {
+  cy: number;
+  outline: boolean;
+}
+const ON_BLACK: Layout = { cy: CENTRE_Y, outline: false };
+/** Over an illustrated scene the subtitles go in the lower third, below the people. */
+const ON_SCENE: Layout = { cy: 1405, outline: true };
+
+/** Words with a dark outline first, when they sit over a picture. */
+function words(ctx: SKRSContext2D, text: string, x: number, y: number, layout: Layout) {
+  if (layout.outline) {
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 16;
+    ctx.strokeStyle = INK;
+    ctx.strokeText(text, x, y);
+  }
+  ctx.fillText(text, x, y);
+}
+
+/** One spoken line: its subtitle, the word to colour, and what part of the Short it is. */
+export interface Line {
   screen: string;
   highlight: string;
-  start: number;
-  end: number;
+  kind: LineKind;
 }
 
 export interface RenderJob {
-  scenes: Scene[];
-  /** The last scene is the call to follow: drawn smaller, with a Follow button. */
+  lines: Line[];
   narration: Narration;
-  palette: Palette;
-  /** Shown small at the top, e.g. "DAILY MOTIVATION". */
+  /** Series name, small at the top, e.g. "MIDDLE CLASS DIARIES". */
   label: string;
   /** Shown at the bottom, e.g. "@channel". */
   handle: string | null;
-  /** Varies the drifting shapes from one Short to the next. */
+  /** Shown big above the story subtitles, e.g. "😭". */
+  emoji: string | null;
+  /** Varies the background music. */
   seed: number;
+  /** A clip played after the punch line, e.g. a laughing reaction. Only its first few seconds are used. */
+  endingPath: string | null;
+  /** An illustrated scene acting out the dialogue behind the subtitles; black when none. */
+  scene?: Scene | null;
+  /** Renders at this many times 1080×1920, e.g. 2 for 4K (2160×3840). Everything is drawn as vectors, so it stays sharp. */
+  scale?: number;
 }
 
-let fontsLoaded = false;
-function loadFonts() {
-  if (fontsLoaded) return;
-  // lib/index.js in the deployed function, .local/ when run as a script — both sit next to assets/.
-  const dir = [join(__dirname, "..", "assets", "fonts"), join(process.cwd(), "assets", "fonts")].find((d) => existsSync(d));
-  if (!dir) throw new Error("Fonts for AI Shorts are missing (functions/assets/fonts).");
-  GlobalFonts.registerFromPath(join(dir, "Poppins-ExtraBold.ttf"), BOLD);
-  GlobalFonts.registerFromPath(join(dir, "Poppins-SemiBold.ttf"), SEMI);
-  fontsLoaded = true;
-}
-
-// ─── Easing ───────────────────────────────────────────────────────────────────
-
-const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
-const easeOutCubic = (x: number) => 1 - (1 - clamp01(x)) ** 3;
-const easeInCubic = (x: number) => clamp01(x) ** 3;
-const easeInOutSine = (x: number) => -(Math.cos(Math.PI * clamp01(x)) - 1) / 2;
-function easeOutBack(x: number) {
-  const c1 = 1.5;
-  const c3 = c1 + 1;
-  const p = clamp01(x);
-  return 1 + c3 * (p - 1) ** 3 + c1 * (p - 1) ** 2;
-}
-
-/** A repeatable pseudo-random number in [0, 1) for shape `i`. */
-function rand(seed: number, i: number) {
-  const x = Math.sin(seed * 9301 + i * 49297) * 233280;
-  return x - Math.floor(x);
-}
-
-function hexA(hex: string, alpha: number) {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
-}
-
-// ─── Text layout ──────────────────────────────────────────────────────────────
-
-interface PlacedWord {
-  text: string;
-  x: number;
-  y: number;
-  width: number;
-  highlighted: boolean;
-  index: number;
-}
-
-interface Layout {
-  words: PlacedWord[];
-  size: number;
-  top: number;
-  bottom: number;
-}
-
-const normalise = (word: string) => word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
-
-/** Wraps a line into centred rows, shrinking the type until it fits in at most four rows. */
-function layout(ctx: SKRSContext2D, text: string, highlight: string, maxWidth: number, startSize: number, centreY: number): Layout {
-  const words = text.split(/\s+/).filter(Boolean);
-  const target = normalise(highlight);
-  let size = startSize;
-  let rows: string[][] = [];
-  for (; size >= 56; size -= 6) {
-    ctx.font = `${size}px "${BOLD}"`;
-    rows = [[]];
-    for (const word of words) {
-      const row = rows[rows.length - 1];
-      const candidate = [...row, word].join(" ");
-      if (row.length && ctx.measureText(candidate).width > maxWidth) rows.push([word]);
-      else row.push(word);
-    }
-    if (rows.length <= 4 && words.every((w) => ctx.measureText(w).width <= maxWidth)) break;
-  }
-
-  const lineHeight = size * 1.28;
-  const top = centreY - (rows.length * lineHeight) / 2;
-  const space = ctx.measureText(" ").width;
-  const placed: PlacedWord[] = [];
-  let index = 0;
-  let highlightUsed = false;
-  rows.forEach((row, r) => {
-    const widths = row.map((w) => ctx.measureText(w).width);
-    const rowWidth = widths.reduce((a, b) => a + b, 0) + space * (row.length - 1);
-    let x = (W - rowWidth) / 2;
-    row.forEach((word, i) => {
-      const highlighted = !highlightUsed && normalise(word) === target;
-      if (highlighted) highlightUsed = true;
-      placed.push({ text: word, x, y: top + r * lineHeight + lineHeight / 2, width: widths[i], highlighted, index: index++ });
-      x += widths[i] + space;
-    });
-  });
-  return { words: placed, size, top, bottom: top + rows.length * lineHeight };
-}
-
-function roundRect(ctx: SKRSContext2D, x: number, y: number, w: number, h: number, r: number) {
-  const radius = Math.min(r, h / 2, w / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.arcTo(x + w, y, x + w, y + h, radius);
-  ctx.arcTo(x + w, y + h, x, y + h, radius);
-  ctx.arcTo(x, y + h, x, y, radius);
-  ctx.arcTo(x, y, x + w, y, radius);
-  ctx.closePath();
-}
-
-// ─── Drawing ──────────────────────────────────────────────────────────────────
-
-function drawBackground(ctx: SKRSContext2D, t: number, job: RenderJob) {
-  const { palette, seed } = job;
-  const sky = ctx.createLinearGradient(0, 0, 0, H);
-  sky.addColorStop(0, palette.top);
-  sky.addColorStop(1, palette.bottom);
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, W, H);
-
-  // Three soft glows drifting on slow, different orbits.
-  palette.glows.forEach((colour, i) => {
-    const speed = 0.12 + rand(seed, i) * 0.1;
-    const cx = W * (0.2 + 0.6 * rand(seed, i + 10)) + Math.sin(t * speed * 2 + i * 2) * 220;
-    const cy = H * (0.18 + 0.32 * i) + Math.cos(t * speed * 1.6 + i) * 180;
-    const radius = 560 + Math.sin(t * 0.5 + i) * 60;
-    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
-    glow.addColorStop(0, hexA(colour, 0.42));
-    glow.addColorStop(0.55, hexA(colour, 0.12));
-    glow.addColorStop(1, hexA(colour, 0));
-    ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, W, H);
-  });
-
-  // A faint grid that slowly slides, for depth.
-  ctx.strokeStyle = "rgba(255,255,255,0.035)";
-  ctx.lineWidth = 2;
-  const step = 120;
-  const shift = (t * 14) % step;
-  ctx.beginPath();
-  for (let x = -step + shift; x < W + step; x += step) {
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, H);
-  }
-  for (let y = -step + shift; y < H + step; y += step) {
-    ctx.moveTo(0, y);
-    ctx.lineTo(W, y);
-  }
-  ctx.stroke();
-}
-
-function drawShapes(ctx: SKRSContext2D, t: number, progress: number, job: RenderJob) {
-  const { palette, seed } = job;
-  const cx = W / 2;
-  const cy = H * 0.47;
-  const intro = easeOutCubic(t / 1.2);
-
-  // Two slow rings behind the text, and an arc that fills as the Short plays.
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.globalAlpha = intro;
-  ctx.rotate(t * 0.12);
-  ctx.setLineDash([4, 26]);
-  ctx.lineCap = "round";
-  ctx.strokeStyle = hexA(palette.accent, 0.35);
-  ctx.lineWidth = 6;
-  ctx.beginPath();
-  ctx.arc(0, 0, 470, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.rotate(-t * 0.3);
-  ctx.setLineDash([140, 60]);
-  ctx.strokeStyle = "rgba(255,255,255,0.07)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(0, 0, 540, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.save();
-  ctx.globalAlpha = intro;
-  ctx.setLineDash([]);
-  ctx.lineCap = "round";
-  ctx.strokeStyle = hexA(palette.accent, 0.85);
-  ctx.lineWidth = 8;
-  ctx.shadowColor = palette.accent;
-  ctx.shadowBlur = 24;
-  ctx.beginPath();
-  ctx.arc(cx, cy, 505, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0.001, progress));
-  ctx.stroke();
-  ctx.restore();
-
-  // Outlined triangles, squares and circles turning slowly in the corners.
-  for (let i = 0; i < 7; i++) {
-    const kind = i % 3;
-    const x = W * rand(seed, i + 20);
-    const y = H * (0.08 + 0.84 * rand(seed, i + 30)) + Math.sin(t * 0.6 + i) * 30;
-    const size = 50 + rand(seed, i + 40) * 70;
-    const spin = t * (0.2 + rand(seed, i + 50) * 0.4) * (i % 2 ? 1 : -1);
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(spin);
-    ctx.globalAlpha = 0.16 * intro;
-    ctx.strokeStyle = i % 2 ? palette.accent : "#ffffff";
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    if (kind === 0) {
-      for (let k = 0; k < 3; k++) {
-        const a = (k / 3) * Math.PI * 2 - Math.PI / 2;
-        if (k === 0) ctx.moveTo(Math.cos(a) * size, Math.sin(a) * size);
-        else ctx.lineTo(Math.cos(a) * size, Math.sin(a) * size);
-      }
-      ctx.closePath();
-    } else if (kind === 1) {
-      ctx.rect(-size * 0.7, -size * 0.7, size * 1.4, size * 1.4);
-    } else {
-      ctx.arc(0, 0, size * 0.75, 0, Math.PI * 2);
-    }
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // Specks of light rising and twinkling.
-  for (let i = 0; i < 46; i++) {
-    const speed = 30 + rand(seed, i + 60) * 70;
-    const x = W * rand(seed, i + 70) + Math.sin(t * 0.8 + i) * 18;
-    const y = (H + 40 - ((rand(seed, i + 80) * H + t * speed) % (H + 80))) | 0;
-    const radius = 2 + rand(seed, i + 90) * 4;
-    const twinkle = 0.25 + 0.6 * (0.5 + 0.5 * Math.sin(t * 2.4 + i * 1.7));
-    ctx.fillStyle = hexA(i % 4 === 0 ? palette.accent : "#ffffff", twinkle * 0.55 * intro);
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
-/** Seconds into a scene's entrance at which word `index` starts to come in. */
-const WORD_STAGGER = 0.085;
-const WORD_IN = 0.5;
-const EXIT = 0.3;
-
-function drawScene(ctx: SKRSContext2D, t: number, scene: Scene, exitAt: number, isOutro: boolean, palette: Palette) {
-  const enterAt = scene.start - 0.12;
-  if (t < enterAt || t > exitAt + EXIT) return;
-  const exit = easeInCubic((t - exitAt) / EXIT);
-
-  ctx.save();
-  ctx.translate(0, -60 * exit);
-  ctx.globalAlpha = 1 - exit;
-
-  const box = layout(ctx, scene.screen, scene.highlight, isOutro ? 820 : 880, isOutro ? 78 : 104, H * 0.47);
-
-  // A big quote mark above each line.
-  if (!isOutro) {
-    const q = easeOutCubic((t - enterAt) / 0.6);
-    ctx.font = `260px "${BOLD}"`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
-    ctx.fillStyle = hexA(palette.accent, 0.28 * q);
-    ctx.fillText("“", W / 2, box.top + 60 - 30 * (1 - q));
-  }
-
-  ctx.font = `${box.size}px "${BOLD}"`;
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "left";
-  for (const word of box.words) {
-    const p = (t - enterAt - word.index * WORD_STAGGER) / WORD_IN;
-    if (p <= 0) continue;
-    const rise = (1 - easeOutBack(p)) * 70;
-    const alpha = easeOutCubic(p);
-
-    if (word.highlighted) {
-      const grow = easeOutCubic((p - 0.35) / 0.8);
-      const padX = box.size * 0.22;
-      const h = box.size * 1.12;
-      ctx.save();
-      ctx.globalAlpha *= alpha;
-      ctx.fillStyle = palette.accent;
-      ctx.shadowColor = palette.accent;
-      ctx.shadowBlur = 40 * grow;
-      roundRect(ctx, word.x - padX, word.y - h / 2 + rise, (word.width + padX * 2) * Math.max(0.02, grow), h, h * 0.26);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    ctx.save();
-    ctx.globalAlpha *= alpha;
-    // A soft shadow keeps white text readable over the bright glows.
-    ctx.shadowColor = "rgba(0,0,0,0.45)";
-    ctx.shadowBlur = word.highlighted ? 0 : 18;
-    ctx.shadowOffsetY = word.highlighted ? 0 : 6;
-    ctx.fillStyle = word.highlighted && p > 0.6 ? palette.onAccent : "#ffffff";
-    ctx.fillText(word.text, word.x, word.y + rise);
-    ctx.restore();
-  }
-
-  // The call to follow gets a pulsing button under it.
-  if (isOutro) {
-    const p = easeOutBack((t - enterAt - 0.5) / 0.6);
-    const pulse = 1 + 0.04 * Math.sin(t * 6);
-    const w = 420 * pulse;
-    const h = 120 * pulse;
-    const y = box.bottom + 90;
-    ctx.save();
-    ctx.globalAlpha *= clamp01(p);
-    ctx.translate(W / 2, y + h / 2);
-    ctx.scale(clamp01(p) || 0.001, clamp01(p) || 0.001);
-    ctx.fillStyle = "#ff0033";
-    ctx.shadowColor = "#ff0033";
-    ctx.shadowBlur = 50;
-    roundRect(ctx, -w / 2, -h / 2, w, h, h / 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    // A bell, in lines.
-    ctx.strokeStyle = "#ffffff";
-    ctx.fillStyle = "#ffffff";
-    ctx.lineWidth = 7;
-    ctx.lineJoin = "round";
-    const bx = -w / 2 + 92;
-    ctx.beginPath();
-    ctx.moveTo(bx - 24, 18);
-    ctx.quadraticCurveTo(bx - 24, -30, bx, -30);
-    ctx.quadraticCurveTo(bx + 24, -30, bx + 24, 18);
-    ctx.lineTo(bx - 30, 18);
-    ctx.lineTo(bx + 30, 18);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(bx, 30, 8, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.font = `52px "${BOLD}"`;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillText("FOLLOW", bx + 52, 4);
-    ctx.restore();
-  }
-  ctx.restore();
-}
-
-function drawChrome(ctx: SKRSContext2D, t: number, progress: number, job: RenderJob) {
-  const { palette } = job;
-  const intro = easeOutCubic((t - 0.1) / 0.8);
-
-  // The label pill at the top.
-  ctx.save();
-  ctx.globalAlpha = intro;
-  ctx.font = `36px "${SEMI}"`;
-  const label = job.label.toUpperCase();
-  const textWidth = ctx.measureText(label).width + label.length * 4;
-  const pillW = textWidth + 110;
-  const pillX = (W - pillW) / 2;
-  const pillY = 170 - 20 * (1 - intro);
-  ctx.fillStyle = "rgba(255,255,255,0.08)";
-  ctx.strokeStyle = "rgba(255,255,255,0.16)";
-  ctx.lineWidth = 2;
-  roundRect(ctx, pillX, pillY, pillW, 84, 42);
-  ctx.fill();
-  ctx.stroke();
-  const dotPulse = 0.5 + 0.5 * Math.sin(t * 4);
-  ctx.fillStyle = palette.accent;
-  ctx.shadowColor = palette.accent;
-  ctx.shadowBlur = 10 + 14 * dotPulse;
-  ctx.beginPath();
-  ctx.arc(pillX + 48, pillY + 42, 10, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = "rgba(255,255,255,0.9)";
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "left";
-  let x = pillX + 76;
-  for (const ch of label) {
-    ctx.fillText(ch, x, pillY + 44);
-    x += ctx.measureText(ch).width + 4;
-  }
-  ctx.restore();
-
-  // Progress bar and handle at the bottom, above YouTube's own controls.
-  ctx.save();
-  ctx.globalAlpha = intro;
-  const barY = H - 300;
-  ctx.fillStyle = "rgba(255,255,255,0.12)";
-  roundRect(ctx, 140, barY, W - 280, 10, 5);
-  ctx.fill();
-  ctx.fillStyle = palette.accent;
-  ctx.shadowColor = palette.accent;
-  ctx.shadowBlur = 16;
-  roundRect(ctx, 140, barY, Math.max(10, (W - 280) * progress), 10, 5);
-  ctx.fill();
-  ctx.shadowBlur = 0;
-  if (job.handle) {
-    ctx.font = `40px "${SEMI}"`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
-    ctx.fillStyle = "rgba(255,255,255,0.72)";
-    ctx.fillText(job.handle, W / 2, barY - 40);
-  }
-  ctx.restore();
-}
-
-/** Draws frame `t` (seconds) of the Short. */
-function drawFrame(ctx: SKRSContext2D, t: number, job: RenderJob, duration: number) {
-  const progress = clamp01(t / duration);
-  // Everything eases in from black over the first half-second and out over the last.
-  drawBackground(ctx, t, job);
-  drawShapes(ctx, t, easeInOutSine(progress) * 0.15 + progress * 0.85, job);
-  const { scenes } = job;
-  scenes.forEach((scene, i) => {
-    const next = scenes[i + 1];
-    const exitAt = next ? next.start - EXIT - 0.05 : duration + 1;
-    drawScene(ctx, t, scene, exitAt, i === scenes.length - 1, job.palette);
-  });
-  drawChrome(ctx, t, progress, job);
-  const fade = Math.max(1 - clamp01(t / 0.5), clamp01((t - (duration - 0.4)) / 0.4));
-  if (fade > 0) {
-    ctx.fillStyle = `rgba(0,0,0,${fade})`;
-    ctx.fillRect(0, 0, W, H);
-  }
+/** x264 settings: the usual quick ones at 1080p, slower and finer for 4K. */
+function encoder(scale: number): string[] {
+  return scale > 1
+    ? ["-c:v", "libx264", "-preset", "slow", "-tune", "animation", "-crf", "16", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "5.2"]
+    : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-profile:v", "high"];
 }
 
 export interface RenderedShort {
@@ -451,66 +92,478 @@ export interface RenderedShort {
   durationSec: number;
 }
 
+let fontsLoaded = false;
+export function loadFonts() {
+  if (fontsLoaded) return;
+  // lib/index.js in the deployed function, .local/ when run as a script — both sit next to assets/.
+  const dir = [join(__dirname, "..", "assets", "fonts"), join(process.cwd(), "assets", "fonts")].find((d) => existsSync(d));
+  if (!dir) throw new Error("Fonts for AI Shorts are missing (functions/assets/fonts).");
+  GlobalFonts.registerFromPath(join(dir, "Poppins-ExtraBold.ttf"), BOLD);
+  GlobalFonts.registerFromPath(join(dir, "Poppins-SemiBold.ttf"), SEMI);
+  GlobalFonts.registerFromPath(join(dir, "NotoColorEmoji.ttf"), EMOJI);
+  fontsLoaded = true;
+}
+
+const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
+const easeOut = (x: number) => 1 - (1 - clamp01(x)) ** 3;
+function easeOutBack(x: number) {
+  const p = clamp01(x);
+  return 1 + 2.5 * (p - 1) ** 3 + 1.5 * (p - 1) ** 2;
+}
+
+const norm = (word: string) => word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+/** "gift-nu" and "busy-ah" count as the keyword "gift" / "busy". */
+const isKey = (word: string, key: string) => !!key && norm(word.split("-")[0]) === norm(key);
+
+/** A piece of subtitle on screen: a few words of a story line, or the whole punch line. */
+interface Chunk {
+  words: string[];
+  line: number;
+  start: number;
+  /** When the next chunk replaces it (the last one stays to the end). */
+  end: number;
+  /** When its words have been spoken. */
+  spokenEnd: number;
+  punch: boolean;
+  /** Who is talking, shown as a tag above the subtitle for the whole line, e.g. "👩 Amma". */
+  speaker: string | null;
+}
+
+/** Splits the story into 1–3 word subtitles timed to the voice, and keeps the punch line whole. */
+function chunksOf(ctx: SKRSContext2D, lines: Line[], spans: Narration["spans"]): Chunk[] {
+  ctx.font = `${SIZE}px ${BOLD_STACK}`;
+  const out: Chunk[] = [];
+  lines.forEach((line, li) => {
+    let words = line.screen.split(/\s+/).filter(Boolean);
+    // "Amma: …" — the name becomes the tag, so the subtitle is only what is said.
+    let speaker: string | null = null;
+    if (/^[A-Za-z]+:$/.test(words[0] ?? "")) {
+      const name = words[0].slice(0, -1);
+      speaker = `${SPEAKERS[norm(name)] ?? "🗣️"} ${name}`;
+      words = words.slice(1);
+    }
+    const { start, end } = spans[li];
+    if (line.kind === "punch") {
+      out.push({ words, line: li, start, end, spokenEnd: end, punch: true, speaker });
+      return;
+    }
+    const groups: string[][] = [[]];
+    for (const word of words) {
+      const group = groups[groups.length - 1];
+      const endsPhrase = /[.,!?:]$/.test(group[group.length - 1] ?? "");
+      if (group.length && (group.length >= 3 || endsPhrase || ctx.measureText([...group, word].join(" ")).width > MAX_W)) groups.push([word]);
+      else group.push(word);
+    }
+    // Each subtitle gets a share of the spoken time in proportion to its letters.
+    const total = groups.reduce((sum, g) => sum + g.join(" ").length + 4, 0);
+    let at = start;
+    for (const group of groups) {
+      const length = ((group.join(" ").length + 4) / total) * (end - start);
+      out.push({ words: group, line: li, start: at, end: at + length, spokenEnd: at + length, punch: false, speaker });
+      at += length;
+    }
+  });
+  // Each subtitle stays up until the next arrives, so the screen never goes blank mid-Short.
+  out.forEach((chunk, i) => (chunk.end = out[i + 1]?.start ?? Infinity));
+  return out;
+}
+
+/** Text with extra space between the letters, centred on `cx`. */
+function spaced(ctx: SKRSContext2D, text: string, cx: number, y: number, gap: number) {
+  const width = [...text].reduce((sum, ch) => sum + ctx.measureText(ch).width + gap, -gap);
+  let x = cx - width / 2;
+  for (const ch of text) {
+    ctx.fillText(ch, x, y);
+    x += ctx.measureText(ch).width + gap;
+  }
+}
+
+/** Who is talking: a cyan name tag centred at `y`, popping in when their line starts. */
+function drawSpeaker(ctx: SKRSContext2D, t: number, speaker: string, y: number, from: number, layout: Layout) {
+  const p = easeOutBack((t - from + 0.04) / 0.2);
+  if (p <= 0) return;
+  ctx.save();
+  ctx.translate(W / 2, y);
+  ctx.scale(p, p);
+  ctx.font = `46px ${BOLD_STACK}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const w = ctx.measureText(speaker).width + 60;
+  ctx.fillStyle = layout.outline ? "rgba(20,18,36,0.8)" : "rgba(62,232,255,0.14)";
+  ctx.beginPath();
+  ctx.roundRect(-w / 2, -38, w, 76, 38);
+  ctx.fill();
+  ctx.fillStyle = CYAN;
+  ctx.fillText(speaker, 0, 2);
+  ctx.restore();
+}
+
+/** A story subtitle: one row, popping in. */
+function drawChunk(ctx: SKRSContext2D, t: number, chunk: Chunk, highlight: string, lineStart: number, layout: Layout) {
+  if (chunk.speaker) drawSpeaker(ctx, t, chunk.speaker, layout.cy - 110, lineStart, layout);
+  const pop = easeOutBack((t - chunk.start + 0.04) / 0.18);
+  ctx.save();
+  ctx.translate(W / 2, layout.cy);
+  ctx.scale(0.86 + 0.14 * pop, 0.86 + 0.14 * pop);
+  ctx.globalAlpha = clamp01(pop * 1.4);
+  ctx.font = `${SIZE}px ${BOLD_STACK}`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  const space = ctx.measureText(" ").width;
+  const widths = chunk.words.map((w) => ctx.measureText(w).width);
+  let x = -(widths.reduce((a, b) => a + b, 0) + space * (widths.length - 1)) / 2;
+  chunk.words.forEach((word, i) => {
+    ctx.fillStyle = isKey(word, highlight) ? YELLOW : "#fff";
+    words(ctx, word, x, 0, layout);
+    x += widths[i] + space;
+  });
+  ctx.restore();
+}
+
+/** The punch line: wrapped rows, its words landing one after another as they are spoken. */
+function drawPunch(ctx: SKRSContext2D, t: number, chunk: Chunk, highlight: string, layout: Layout) {
+  const size = PUNCH_SIZE;
+  ctx.font = `${size}px ${BOLD_STACK}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const space = ctx.measureText(" ").width;
+  const rows: string[][] = [[]];
+  for (const word of chunk.words) {
+    const row = rows[rows.length - 1];
+    if (row.length && ctx.measureText([...row, word].join(" ")).width > MAX_W) rows.push([word]);
+    else row.push(word);
+  }
+  const lineHeight = size * 1.3;
+  const top = layout.cy - (rows.length * lineHeight) / 2 + lineHeight / 2;
+  const step = ((chunk.spokenEnd - chunk.start) * 0.8) / chunk.words.length;
+
+  // The screen shakes as the punch line lands, and again on the drum sting after it.
+  const kick = (from: number) => Math.max(0, 1 - (t - from) / 0.35) * (t >= from ? 1 : 0);
+  const shake = Math.max(kick(chunk.start), kick(chunk.spokenEnd + 0.1));
+  ctx.save();
+  ctx.translate(Math.sin(t * 90) * 14 * shake, Math.cos(t * 70) * 10 * shake);
+
+  if (chunk.speaker) drawSpeaker(ctx, t, chunk.speaker, top - lineHeight / 2 - 50, chunk.start, layout);
+  // Once it has been said, a laughing face lands above it with the drum sting, shaking with the laugh.
+  // Over a scene the people react instead.
+  const laugh = layout.outline ? 0 : easeOutBack((t - chunk.spokenEnd - 0.1) / 0.35);
+  if (laugh > 0) {
+    ctx.save();
+    ctx.globalAlpha = clamp01(laugh * 1.4);
+    ctx.translate(W / 2, top - lineHeight / 2 - (chunk.speaker ? 190 : 110));
+    ctx.rotate(Math.sin(t * 14) * 0.12);
+    ctx.scale(laugh * (1 + 0.06 * Math.sin(t * 9)), laugh * (1 + 0.06 * Math.sin(t * 9)));
+    ctx.font = `130px "${EMOJI}"`;
+    ctx.fillText("😂", 0, 0);
+    ctx.restore();
+  }
+  let k = 0;
+  rows.forEach((row, r) => {
+    const widths = row.map((w) => ctx.measureText(w).width);
+    let x = W / 2 - (widths.reduce((a, b) => a + b, 0) + space * (row.length - 1)) / 2;
+    row.forEach((word, i) => {
+      const p = easeOutBack((t - chunk.start - k++ * step) / 0.22);
+      if (p > 0) {
+        ctx.save();
+        ctx.globalAlpha = clamp01(p * 1.4);
+        ctx.fillStyle = isKey(word, highlight) ? YELLOW : "#fff";
+        words(ctx, word, x + widths[i] / 2, top + r * lineHeight + (1 - p) * 30, layout);
+        ctx.restore();
+      }
+      x += widths[i] + space;
+    });
+  });
+  ctx.restore();
+}
+
+/** The story's emoji, big above the subtitles, bobbing gently from when the story starts. */
+function drawStoryEmoji(ctx: SKRSContext2D, t: number, emoji: string | null, from: number) {
+  if (!emoji) return;
+  const p = easeOutBack((t - from) / 0.4);
+  if (p <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = clamp01(p * 1.4);
+  ctx.translate(W / 2, CENTRE_Y - 260 + Math.sin((t - from) * 2.6) * 14);
+  ctx.rotate(Math.sin((t - from) * 1.8) * 0.08);
+  ctx.scale(p, p);
+  ctx.font = `150px "${EMOJI}"`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(emoji, 0, 0);
+  ctx.restore();
+}
+
+/** The series name over a scene: a yellow sticker near the top that drops in and sways a little. */
+function drawSeriesBadge(ctx: SKRSContext2D, t: number, label: string) {
+  const text = label.toUpperCase();
+  const p = easeOutBack(t / 0.5);
+  ctx.save();
+  ctx.translate(W / 2, 150 - (1 - p) * 120);
+  ctx.rotate(-0.035 + Math.sin(t * 1.6) * 0.012);
+  ctx.font = `46px ${BOLD_STACK}`;
+  const gap = 5;
+  const w = [...text].reduce((sum, ch) => sum + ctx.measureText(ch).width + gap, -gap) + 90;
+  // A hard shadow, then the sticker with a thick outline.
+  ctx.fillStyle = INK;
+  ctx.beginPath();
+  ctx.roundRect(-w / 2 + 10, -42 + 12, w, 84, 42);
+  ctx.fill();
+  ctx.fillStyle = YELLOW;
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 9;
+  ctx.beginPath();
+  ctx.roundRect(-w / 2, -42, w, 84, 42);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = INK;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  spaced(ctx, text, 0, 3, gap);
+  ctx.restore();
+}
+
 /**
- * Renders the Short to an H.264/AAC MP4: frames are drawn on a canvas and piped
- * to ffmpeg with the voice-over and a quiet synthesised pad underneath.
+ * Subtitles for a long video: the same look as over a scene, centred on `cx`
+ * at height `cy`. Each line's words leave the screen a moment after it is said.
+ */
+export function subtitles(ctx: SKRSContext2D, lines: Line[], spans: Narration["spans"], cx: number, cy: number) {
+  const chunks = chunksOf(ctx, lines, spans);
+  for (const chunk of chunks) chunk.end = Math.min(chunk.end, spans[chunk.line].end + 0.7);
+  const layout: Layout = { cy, outline: true };
+  return (t: number) => {
+    const chunk = chunks.find((c) => t >= c.start - 0.04 && t < c.end);
+    if (!chunk) return;
+    ctx.save();
+    // The drawing centres on the Short's width; this moves it to `cx`.
+    ctx.translate(cx - W / 2, 0);
+    const highlight = lines[chunk.line].highlight;
+    if (chunk.punch) drawPunch(ctx, t, chunk, highlight, layout);
+    else drawChunk(ctx, t, chunk, highlight, chunks.find((c) => c.line === chunk.line)?.start ?? chunk.start, layout);
+    ctx.restore();
+  };
+}
+
+/** With an ending clip, the punch line's last word is cut straight to the clip; without one, the drum sting gets room to ring. */
+const CUT_AFTER_PUNCH = 0.5;
+function lengthOf(job: RenderJob): number {
+  const last = job.narration.spans[job.narration.spans.length - 1];
+  return job.endingPath && last ? Math.min(job.narration.durationSec, last.end + CUT_AFTER_PUNCH) : job.narration.durationSec;
+}
+
+/** Draws frame `t` (seconds) of the Short. */
+function drawFrame(ctx: SKRSContext2D, t: number, job: RenderJob, chunks: Chunk[], talk: number) {
+  const duration = lengthOf(job);
+  const layout = job.scene ? ON_SCENE : ON_BLACK;
+  if (job.scene) {
+    ctx.save();
+    job.scene(ctx, { t, spans: job.narration.spans, speakers: job.lines.map((l) => /^([A-Za-z]+):/.exec(l.screen)?.[1] ?? "Naan"), talk, duration });
+    ctx.restore();
+    // The lower third darkens so the subtitles read over the picture.
+    const shade = ctx.createLinearGradient(0, 1240, 0, 1380);
+    shade.addColorStop(0, "rgba(20,18,36,0)");
+    shade.addColorStop(1, "rgba(20,18,36,0.82)");
+    ctx.fillStyle = shade;
+    ctx.fillRect(0, 1240, W, H - 1240);
+    drawSeriesBadge(ctx, t, job.label);
+  } else {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, H);
+    ctx.font = `34px "${SEMI}"`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    spaced(ctx, job.label.toUpperCase(), W / 2, 230, 6);
+  }
+
+  const chunk = chunks.find((c) => t >= c.start - 0.04 && t < c.end);
+  if (chunk) {
+    const highlight = job.lines[chunk.line].highlight;
+    if (chunk.punch) drawPunch(ctx, t, chunk, highlight, layout);
+    else {
+      if (!job.scene) drawStoryEmoji(ctx, t, job.emoji, chunks[0].start);
+      drawChunk(ctx, t, chunk, highlight, chunks.find((c) => c.line === chunk.line)?.start ?? chunk.start, layout);
+    }
+  }
+
+  // A thin progress line and the handle, above YouTube's own controls.
+  const barY = H - 300;
+  ctx.fillStyle = job.scene ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.12)";
+  ctx.fillRect(140, barY, W - 280, 6);
+  ctx.fillStyle = "rgba(255,255,255,0.7)";
+  ctx.fillRect(140, barY, (W - 280) * clamp01(t / duration), 6);
+  if (job.handle) {
+    ctx.font = `38px "${SEMI}"`;
+    ctx.textAlign = "center";
+    ctx.fillStyle = job.scene ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.4)";
+    // Over a scene the subtitles need the room above the bar, so the handle goes below it.
+    ctx.fillText(job.handle, W / 2, job.scene ? barY + 48 : barY - 50);
+  }
+
+  // Fades in from black; fades out only when nothing follows — an ending clip comes in on a hard cut.
+  const fade = Math.max(1 - easeOut(t / 0.3), job.endingPath ? 0 : clamp01((t - (duration - 0.4)) / 0.4));
+  if (fade > 0) {
+    ctx.fillStyle = `rgba(0,0,0,${fade})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+export async function run(args: string[], stdin?: (write: (frame: Buffer) => Promise<void>) => Promise<void>) {
+  const ffmpeg = spawn(ffmpegPath as unknown as string, ["-hide_banner", "-loglevel", "error", "-y", ...args], { stdio: [stdin ? "pipe" : "ignore", "ignore", "pipe"] });
+  let stderr = "";
+  ffmpeg.stderr?.on("data", (chunk: Buffer) => (stderr = (stderr + chunk.toString()).slice(-4000)));
+  const exited = once(ffmpeg, "close") as Promise<[number | null, NodeJS.Signals | null]>;
+  if (stdin && ffmpeg.stdin) {
+    const pipe = ffmpeg.stdin;
+    // If ffmpeg dies mid-way, writing more fails; the exit code below says why.
+    pipe.on("error", () => {});
+    try {
+      await stdin(async (frame) => {
+        if (pipe.destroyed || pipe.writableEnded) return;
+        if (!pipe.write(frame)) await once(pipe, "drain");
+      });
+    } catch (error) {
+      // ffmpeg closing its input early (e.g. once `-t` is reached) isn't a failure; its exit code below says.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EPIPE" && code !== "EOF" && code !== "ERR_STREAM_DESTROYED") {
+        pipe.end();
+        await exited;
+        throw error;
+      }
+    } finally {
+      pipe.end();
+    }
+  }
+  const [code, signal] = await exited;
+  if (code !== 0) throw new Error(`ffmpeg ${signal ?? `exited ${code}`}: ${stderr.slice(-800)}`);
+  return stderr;
+}
+
+/** ffmpeg's log for `args`, e.g. to read what a file holds or what a detect filter found. */
+async function ffmpegLog(args: string[]): Promise<string> {
+  const ffmpeg = spawn(ffmpegPath as unknown as string, ["-hide_banner", ...args], { stdio: ["ignore", "ignore", "pipe"] });
+  let log = "";
+  ffmpeg.stderr?.on("data", (chunk: Buffer) => (log = (log + chunk.toString()).slice(-200_000)));
+  await once(ffmpeg, "close");
+  return log;
+}
+
+/**
+ * The picture inside a clip's bars — the white or black side and top strips meme
+ * pages add, with their watermarks — as an ffmpeg crop, or null when it has none.
+ */
+async function pictureArea(path: string, seconds: number): Promise<string | null> {
+  const found: Array<{ crop: string; area: number }> = [];
+  // Black bars as they are; white bars once the picture is inverted.
+  for (const filter of ["cropdetect=limit=40:round=2:reset=0", "negate,cropdetect=limit=40:round=2:reset=0"]) {
+    const log = await ffmpegLog(["-t", seconds.toFixed(2), "-i", path, "-vf", filter, "-an", "-f", "null", "-"]);
+    const all = [...log.matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)];
+    const last = all[all.length - 1];
+    if (last) found.push({ crop: last[0], area: Number(last[1]) * Number(last[2]) });
+  }
+  const size = /Stream #.*Video:.*?(\d{2,5})x(\d{2,5})/.exec(await ffmpegLog(["-i", path]));
+  if (!size || !found.length) return null;
+  const full = Number(size[1]) * Number(size[2]);
+  // The tighter of the two, unless it would throw most of the picture away.
+  const best = found.sort((a, b) => a.area - b.area).find((f) => f.area >= full * 0.2 && f.area < full * 0.97);
+  return best?.crop ?? null;
+}
+
+/** Plays the ending clip after the Short: bars cut off, as wide as the frame on black, at most a few seconds, with its own sound. */
+async function appendEnding(shortPath: string, endingPath: string, workDir: string, scale: number) {
+  // A clip without a sound track gets silence, so the two parts join cleanly.
+  const info = await ffmpegLog(["-i", endingPath]);
+  const hasAudio = /Stream #.*Audio:/.test(info);
+  const found = /Duration: (\d+):(\d+):([\d.]+)/.exec(info);
+  const clipSec = found ? Number(found[1]) * 3600 + Number(found[2]) * 60 + Number(found[3]) : AUTO_SHORTS_ENDING_MAX_SEC;
+  if (!/Stream #.*Video:/.test(info) || clipSec < 0.5) throw new Error("The ending clip isn't a video that can be played.");
+  const seconds = Math.min(AUTO_SHORTS_ENDING_MAX_SEC, clipSec);
+  const crop = await pictureArea(endingPath, seconds);
+
+  const out = join(workDir, "with-ending.mp4");
+  await run([
+    "-i", shortPath,
+    "-t", String(seconds), "-i", endingPath,
+    ...(hasAudio ? [] : ["-f", "lavfi", "-t", String(seconds), "-i", "anullsrc=r=48000:cl=mono"]),
+    "-filter_complex",
+    `[1:v]${crop ? `${crop},` : ""}scale=${W * scale}:${H * scale}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${W * scale}:${H * scale}:(ow-iw)/2:(oh-ih)/2:black,fps=${FPS},setsar=1,format=yuv420p,` +
+      `fade=t=out:st=${(seconds - 0.4).toFixed(2)}:d=0.4[ev];` +
+      `[${hasAudio ? 1 : 2}:a]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=0:${seconds.toFixed(2)},afade=t=out:st=${(seconds - 0.6).toFixed(2)}:d=0.6[ea];` +
+      `[0:v]setsar=1,format=yuv420p[sv];[0:a]aformat=channel_layouts=stereo[sa];` +
+      `[sv][sa][ev][ea]concat=n=2:v=1:a=1[v][a]`,
+    "-map", "[v]", "-map", "[a]",
+    ...encoder(scale),
+    "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+    "-movflags", "+faststart", out,
+  ]);
+  await rename(out, shortPath);
+  return seconds;
+}
+
+/**
+ * Renders the black-screen Short to an H.264/AAC MP4: frames are drawn on a
+ * canvas and piped to ffmpeg with the voice-over and calm music that ducks
+ * under the voice. An ending clip, if given, is joined on after.
  */
 export async function renderShort(job: RenderJob, workDir: string): Promise<RenderedShort> {
   if (!ffmpegPath) throw new Error("ffmpeg isn't available on this platform.");
   loadFonts();
-  const duration = job.narration.durationSec;
+  const duration = lengthOf(job);
   const frames = Math.ceil(duration * FPS);
   const voicePath = join(workDir, "voice.wav");
+  const musicPath = join(workDir, "music.wav");
   const outPath = join(workDir, "short.mp4");
   await writeFile(voicePath, job.narration.wav);
+  await writeFile(musicPath, calmMusic(duration + 0.5, job.seed));
 
-  // A soft major-seventh pad that swells in and out — no music library, so nothing to clear.
-  const pad = [130.81, 196.0, 246.94, 329.63]
-    .map((f, i) => `${(0.035 / (i + 1)).toFixed(4)}*sin(2*PI*${f}*t)*(0.6+0.4*sin(2*PI*${(0.07 + i * 0.03).toFixed(2)}*t))`)
-    .join("+");
+  const scale = job.scale ?? 1;
+  const canvas = createCanvas(W * scale, H * scale);
+  const ctx = canvas.getContext("2d");
+  const chunks = chunksOf(ctx, job.lines, job.narration.spans);
+  // How open the speaker's mouth is in each frame, from the voice.
+  const talk = job.scene ? talkEnvelope(job.narration.wav, FPS, duration) : null;
 
-  const ffmpeg = spawn(
-    ffmpegPath,
+  // A pop as each hook button lands, and the drum sting right after the punch line.
+  const sfxPath = join(workDir, "sfx.wav");
+  const events: SfxEvent[] = job.lines.flatMap((line, i): SfxEvent[] => {
+    const span = job.narration.spans[i];
+    // The ending clip brings its own laugh; the drum sting is for Shorts without one.
+    if (line.kind === "punch" && !job.endingPath) return [{ at: span.end + 0.1, kind: "rimshot" }];
+    return [];
+  });
+  await writeFile(sfxPath, sfxTrack(duration + 0.5, events));
+  let thumbnail: Buffer | null = null;
+  // The thumbnail is the first line of the story, not the hook.
+  const thumbAt = Math.min(duration - 0.5, (chunks[0]?.start ?? 0) + 0.6);
+
+  await run(
     [
-      "-hide_banner", "-loglevel", "error", "-y",
-      "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${W}x${H}`, "-r", String(FPS), "-i", "pipe:0",
+      "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${W * scale}x${H * scale}`, "-r", String(FPS), "-i", "pipe:0",
       "-i", voicePath,
-      "-f", "lavfi", "-i", `aevalsrc='${pad}':s=48000:d=${duration.toFixed(2)}`,
+      "-i", musicPath,
+      "-i", sfxPath,
       "-filter_complex",
-      `[2:a]lowpass=f=900,afade=t=in:d=1.5,afade=t=out:st=${Math.max(0, duration - 1.5).toFixed(2)}:d=1.5[bed];` +
-        `[1:a]aresample=48000,highpass=f=70,acompressor=threshold=-18dB:ratio=3,volume=1.6[voice];` +
-        `[voice][bed]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]`,
+      `[1:a]aresample=48000,highpass=f=70,acompressor=threshold=-18dB:ratio=3,volume=1.6,aformat=channel_layouts=stereo,asplit[voice][key];` +
+        `[2:a]volume=0.5[music];[music][key]sidechaincompress=threshold=0.04:ratio=3:attack=30:release=500[bed];` +
+        `[3:a]aformat=channel_layouts=stereo,volume=1.2[fx];` +
+        `[voice][bed][fx]amix=inputs=3:duration=first:normalize=0,alimiter=limit=0.95[a]`,
       "-map", "0:v", "-map", "[a]",
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p", "-profile:v", "high",
-      "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+      ...encoder(scale),
+      "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
       "-movflags", "+faststart", "-t", duration.toFixed(2),
       outPath,
     ],
-    { stdio: ["pipe", "ignore", "pipe"] },
+    async (write) => {
+      for (let f = 0; f < frames; f++) {
+        const t = f / FPS;
+        // Everything is drawn in 1080×1920 units; the transform scales it up.
+        ctx.setTransform(scale, 0, 0, scale, 0, 0);
+        drawFrame(ctx, t, job, chunks, talk?.[f] ?? 0);
+        if (!thumbnail && t >= thumbAt) thumbnail = canvas.encodeSync("jpeg", 88);
+        await write(Buffer.from(canvas.data()));
+      }
+    },
   );
-  // If ffmpeg dies mid-way, writing more frames fails; the exit code below says why.
-  ffmpeg.stdin.on("error", () => {});
-  let stderr = "";
-  ffmpeg.stderr.on("data", (chunk: Buffer) => (stderr = (stderr + chunk.toString()).slice(-4000)));
-  const exited = once(ffmpeg, "close") as Promise<[number | null, NodeJS.Signals | null]>;
 
-  const canvas = createCanvas(W, H);
-  const ctx = canvas.getContext("2d");
-  let thumbnail: Buffer | null = null;
-  const firstScene = job.scenes[0];
-  const thumbAt = Math.min(duration - 0.5, firstScene.start + 1.6);
-  try {
-    for (let f = 0; f < frames; f++) {
-      const t = f / FPS;
-      drawFrame(ctx, t, job, duration);
-      if (!thumbnail && t >= thumbAt) thumbnail = canvas.encodeSync("jpeg", 88);
-      if (!ffmpeg.stdin.write(Buffer.from(canvas.data()))) await once(ffmpeg.stdin, "drain");
-    }
-  } finally {
-    ffmpeg.stdin.end();
-  }
-  const [code, signal] = await exited;
-  if (code !== 0) throw new Error(`ffmpeg ${signal ?? `exited ${code}`}: ${stderr.slice(-800)}`);
-
-  return { video: await readFile(outPath), thumbnail: thumbnail ?? canvas.encodeSync("jpeg", 88), durationSec: duration };
+  const endingSec = job.endingPath ? await appendEnding(outPath, job.endingPath, workDir, scale) : 0;
+  return { video: await readFile(outPath), thumbnail: thumbnail ?? canvas.encodeSync("jpeg", 88), durationSec: duration + endingSec };
 }

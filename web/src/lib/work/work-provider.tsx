@@ -17,6 +17,18 @@ export interface ImportJob {
   added: number;
   rejected: RejectedShortFile[];
   error: string | null;
+  /** The channel the Shorts are added on, so it shows only there. */
+  connectionId: string | null;
+}
+
+/** One lot of files handed to startImport. */
+interface ImportBatch {
+  files: File[];
+  uid: string;
+  settings: Settings;
+  banners: ChosenBanners;
+  reaction: ReactionChoice | null;
+  connectionId?: string;
 }
 
 /** One video being cut into Shorts. Stays, finished, until dismissed. */
@@ -28,6 +40,8 @@ export interface SplitJob {
   /** Shorts made, once done. */
   count: number;
   error: string | null;
+  /** The video's channel, so it shows only there. */
+  connectionId: string | null;
 }
 
 interface WorkContextValue {
@@ -67,19 +81,56 @@ export function WorkProvider({ children }: { children: ReactNode }) {
   const [importJob, setImportJob] = useState<ImportJob | null>(null);
   const [splits, setSplits] = useState<Map<string, SplitJob>>(new Map());
   const importing = useRef(false);
+  /** Batches added while one is being saved; they run one after another, as part of the same job. */
+  const importQueue = useRef<ImportBatch[]>([]);
+  /** Files of this job already through, from the batches before the running one. */
+  const importDone = useRef(0);
   const splitting = useRef(new Set<string>());
 
-  const startImport = useCallback((files: File[], uid: string, settings: Settings, banners: ChosenBanners, reaction: ReactionChoice | null = null, connectionId?: string) => {
-    if (importing.current || files.length === 0) return;
-    importing.current = true;
-    setImportJob({ status: "working", progress: { index: 0, total: files.length, percent: 0 }, added: 0, rejected: [], error: null });
-    uploadShortFiles(files, uid, settings, (progress) => setImportJob((job) => job && { ...job, progress }), banners, reaction, connectionId)
-      .then(({ added, rejected }) => setImportJob((job) => job && { ...job, status: "done", added, rejected }))
-      .catch((err) => setImportJob((job) => job && { ...job, status: "failed", error: err instanceof HelperOfflineError || err instanceof ReactionVideoError || err instanceof BrowserRenderError ? err.message : null }))
-      .finally(() => {
+  const runImports = useCallback(() => {
+    const waiting = () => importQueue.current.reduce((sum, batch) => sum + batch.files.length, 0);
+    const step = () => {
+      const batch = importQueue.current.shift();
+      if (!batch) {
         importing.current = false;
-      });
+        setImportJob((job) => job && { ...job, status: "done" });
+        return;
+      }
+      const before = importDone.current;
+      // Progress counts across every batch of the job, so the bar runs once from start to end.
+      const onProgress = (progress: ImportProgress) => setImportJob((job) => job && { ...job, progress: { ...progress, index: before + progress.index, total: before + progress.total + waiting() } });
+      uploadShortFiles(batch.files, batch.uid, batch.settings, onProgress, batch.banners, batch.reaction, batch.connectionId)
+        .then(({ added, rejected }) => {
+          importDone.current += batch.files.length;
+          setImportJob((job) => job && { ...job, added: job.added + added, rejected: [...job.rejected, ...rejected] });
+          step();
+        })
+        .catch((err) => {
+          // The helper or the renderer is gone, so the batches still waiting would fail the same way.
+          importQueue.current = [];
+          importing.current = false;
+          setImportJob((job) => job && { ...job, status: "failed", error: err instanceof HelperOfflineError || err instanceof ReactionVideoError || err instanceof BrowserRenderError ? err.message : null });
+        });
+    };
+    step();
   }, []);
+
+  const startImport = useCallback(
+    (files: File[], uid: string, settings: Settings, banners: ChosenBanners, reaction: ReactionChoice | null = null, connectionId?: string) => {
+      if (files.length === 0) return;
+      importQueue.current.push({ files, uid, settings, banners, reaction, connectionId });
+      // One is already being saved: this batch waits its turn and joins the same job.
+      if (importing.current) {
+        setImportJob((job) => job && { ...job, progress: { ...job.progress, total: job.progress.total + files.length } });
+        return;
+      }
+      importing.current = true;
+      importDone.current = 0;
+      setImportJob({ status: "working", progress: { index: 0, total: files.length, percent: 0 }, added: 0, rejected: [], error: null, connectionId: connectionId ?? null });
+      runImports();
+    },
+    [runImports],
+  );
 
   const dismissImport = useCallback(() => setImportJob((job) => (job?.status === "working" ? job : null)), []);
 
@@ -94,7 +145,7 @@ export function WorkProvider({ children }: { children: ReactNode }) {
     (video, shortDuration, settings, banners, label, tail, reaction) => {
       if (splitting.current.has(video.id)) return;
       splitting.current.add(video.id);
-      setSplits((prev) => new Map(prev).set(video.id, { videoId: video.id, title: video.title, status: "working", progress: { stage: "Starting", percent: 0 }, count: 0, error: null }));
+      setSplits((prev) => new Map(prev).set(video.id, { videoId: video.id, title: video.title, status: "working", progress: { stage: "Starting", percent: 0 }, count: 0, error: null, connectionId: video.connectionId ?? null }));
       splitLocally(video, shortDuration, settings, (progress) => patchSplit(video.id, { progress }), banners, label, tail, reaction)
         .then((count) => patchSplit(video.id, { status: "done", count }))
         .catch((err) => patchSplit(video.id, { status: "failed", error: err instanceof Error ? err.message : "Something went wrong. Please try again." }))
