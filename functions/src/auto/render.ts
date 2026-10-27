@@ -364,7 +364,8 @@ function drawFrame(ctx: SKRSContext2D, t: number, job: RenderJob, chunks: Chunk[
     shade.addColorStop(1, "rgba(20,18,36,0.82)");
     ctx.fillStyle = shade;
     ctx.fillRect(0, 1240, W, H - 1240);
-    drawSeriesBadge(ctx, t, job.label);
+    // An empty label leaves the top of the frame clear.
+    if (job.label) drawSeriesBadge(ctx, t, job.label);
   } else {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, W, H);

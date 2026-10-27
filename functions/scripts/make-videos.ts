@@ -66,7 +66,13 @@ async function makeOne(i: number, { id, script, scene }: (typeof EPISODES)[numbe
         await writeFile(take, await geminiSpeech(key, lines, plan.geminiVoices));
         console.log(`${id}: voice recorded → ${take}`);
       }
-      narration = narrationFromPcm(lines, splitDialogue(await readFile(take), lines));
+      // A take Gemini paused oddly in is cut by hand: voice/<id>.splits.json, [start, end] seconds per line.
+      const pcm = await readFile(take);
+      const cutsFile = join(voiceDir, `${id}.splits.json`);
+      const parts = existsSync(cutsFile)
+        ? (JSON.parse(await readFile(cutsFile, "utf8")) as Array<[number, number]>).map(([from, to]) => pcm.subarray(Math.round(from * 24_000) * 2, Math.round(to * 24_000) * 2))
+        : splitDialogue(pcm, lines);
+      narration = narrationFromPcm(lines, parts);
     }
 
     const name = `${String(i + 1).padStart(2, "0")}-${id}`;
