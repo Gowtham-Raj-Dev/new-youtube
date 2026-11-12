@@ -129,6 +129,14 @@ describe("settings", () => {
   test("can save valid settings", async () => {
     await assertSucceeds(alice().firestore().doc("settings/alice").set(newSettings("alice")));
   });
+  test("can read and save per-channel settings for own connections only", async () => {
+    const channelSettings = alice().firestore().doc("settings/alice_UCabc-123");
+    await assertSucceeds(channelSettings.set(newSettings("alice")));
+    await assertSucceeds(channelSettings.get());
+    await assertFails(alice().firestore().doc("settings/bob_UCabc-123").set(newSettings("alice")));
+    await assertFails(bob().firestore().doc("settings/alice_UCabc-123").get());
+    await assertFails(bob().firestore().doc("settings/alice_UCabc-123").set(newSettings("alice")));
+  });
   test("rejects invalid enum values", async () => {
     const bad = newSettings("alice");
     bad.processing = { ...bad.processing, cropMode: "stretch" };

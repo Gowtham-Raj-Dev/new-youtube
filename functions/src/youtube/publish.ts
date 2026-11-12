@@ -1,319 +1,51 @@
 import { onSchedule } from "firebase-functions/scheduler";
 import * as logger from "firebase-functions/logger";
-import { FieldValue, Timestamp, getFirestore, type DocumentReference, type DocumentSnapshot, type QueryDocumentSnapshot } from "firebase-admin/firestore";
-import { getStorage } from "firebase-admin/storage";
-import { getAuth } from "firebase-admin/auth";
-import { ADMIN_EMAILS, COLLECTIONS, type ScheduleDoc, type SettingsDoc, type ShortDoc, type YoutubeCheckState } from "@shortflow/shared";
-import { DAILY_UPLOADS_PER_USER, STORAGE_REGION, TOKEN_ENCRYPTION_KEY, YOUTUBE_CLIENT_SECRET } from "../config";
-import { logActivity, notify } from "../lib/activity";
+import { FieldValue, Timestamp, getFirestore } from "firebase-admin/firestore";
+import { COLLECTIONS, type ScheduleDoc, type ShortDoc, type YoutubeCheckState, type YoutubeConnectionDoc } from "@shortflow/shared";
+import { STORAGE_REGION, TOKEN_ENCRYPTION_KEY, YOUTUBE_CLIENT_SECRET } from "../config";
+import { notify } from "../lib/activity";
+import {
+  createPublishContext,
+  publishOneForModel,
+  runChannelPublishModel,
+  settleSchedule,
+  type ChannelPublishResult,
+  type ChannelTarget,
+  type PublishContext,
+} from "./channel-publisher";
 import { getAccessToken } from "./connections";
-import { MANAGE_SCOPE, TokenRevokedError } from "./oauth";
 import { fetchVideoStatus, setVideoPrivacy } from "./status";
-import { YouTubeUploadError, uploadToYouTube, type UploadSource } from "./upload";
 
-const PAGE_SIZE = 50;
-const MAX_UPLOADS_PER_RUN = 10;
-/** So one busy account can't take a whole run while others wait. */
-const MAX_UPLOADS_PER_USER_PER_RUN = 3;
-const MAX_ATTEMPTS = 3;
-/** Stop starting uploads this far into a run, so the one in flight finishes before the timeout. */
+const PAGE_SIZE = 100;
+/** Publish this many independent channel models concurrently in a single sweep. */
+const MAX_CHANNEL_CONCURRENCY = 4;
+/** Stop starting new uploads this far into a run so the one in flight finishes before the timeout. */
 const RUN_BUDGET_MS = 6 * 60 * 1000;
 /** Longer than a run can live: a schedule still `uploading` after this was orphaned by a crash. */
 const STUCK_AFTER_MS = 30 * 60 * 1000;
 
-type NotificationPrefs = SettingsDoc["notifications"];
-type ConnectionState = "connected" | "paused" | "missing";
-
-interface Claimed {
-  ref: DocumentReference;
-  schedule: ScheduleDoc;
-  short: ShortDoc;
-}
-
-type Settlement =
-  | { status: "published"; youtubeVideoId: string; held: boolean }
-  | { status: "failed" | "quota_exceeded"; message: string }
-  /** Back in line for the next sweep. */
-  | { status: "scheduled"; countAttempt: boolean };
-
-/** What the sweep should do after one schedule: carry on, skip this channel or this user, or stop uploading altogether. */
-type Outcome = "published" | "skipped" | "pause_connection" | "pause_user" | "stop_run";
-
-/** A user's Shorts published since the last quota reset, against their daily limit. */
-interface Allowance {
-  used: number;
-  limit: number;
-}
-
-interface Run {
-  connectionState: (connectionId: string) => Promise<ConnectionState>;
-  prefs: (userId: string) => Promise<NotificationPrefs>;
-  /** Whether this connection may change a video's visibility — only ones made since that permission was asked for. */
-  canManage: (connectionId: string) => Promise<boolean>;
-  allowance: (userId: string) => Promise<Allowance>;
-}
-
-function memo<T>(load: (key: string) => Promise<T>) {
-  const cache = new Map<string, Promise<T>>();
-  return (key: string) => {
-    let value = cache.get(key);
-    if (!value) cache.set(key, (value = load(key)));
-    return value;
-  };
-}
-
-function startRun(): Run {
-  const db = getFirestore();
-  return {
-    connectionState: memo(async (connectionId) => {
-      const snap = await db.collection(COLLECTIONS.youtubeConnections).doc(connectionId).get();
-      if (!snap.exists) return "missing";
-      return snap.get("status") === "connected" ? "connected" : "paused";
-    }),
-    prefs: memo(async (userId) => {
-      const snap = await db.collection(COLLECTIONS.settings).doc(userId).get();
-      return (snap.get("notifications") as NotificationPrefs | undefined) ?? { processing: true, uploads: true, failures: true };
-    }),
-    canManage: memo(async (connectionId) => {
-      const scopes = (await db.collection(COLLECTIONS.youtubeCredentials).doc(connectionId).get()).get("scopes") as string[] | undefined;
-      return scopes?.includes(MANAGE_SCOPE) ?? false;
-    }),
-    allowance: memo(async (userId) => {
-      const user = await getAuth().getUser(userId).catch(() => null);
-      if (user?.email && user.emailVerified && ADMIN_EMAILS.includes(user.email)) return { used: 0, limit: Infinity };
-      const since = Timestamp.fromMillis(lastQuotaResetMs(Date.now()));
-      const published = await db.collection(COLLECTIONS.shorts).where("userId", "==", userId).where("publishedAt", ">=", since).count().get();
-      return { used: published.data().count, limit: DAILY_UPLOADS_PER_USER.value() };
-    }),
-  };
-}
-
-/** YouTube API quotas reset at midnight Pacific Time. */
-function lastQuotaResetMs(now: number): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Los_Angeles",
-    hourCycle: "h23",
-    hour: "numeric",
-    minute: "numeric",
-    second: "numeric",
-  }).formatToParts(now);
-  const part = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
-  return now - (part("hour") * 3600 + part("minute") * 60 + part("second")) * 1000;
-}
-
-async function storageSource(path: string): Promise<UploadSource | null> {
-  const file = getStorage().bucket().file(path);
-  const [exists] = await file.exists();
-  if (!exists) return null;
-  const [metadata] = await file.getMetadata();
-  return {
-    size: Number(metadata.size),
-    contentType: metadata.contentType ?? "video/mp4",
-    read: async (start, end) => (await file.download({ start, end, validation: false }))[0],
-  };
-}
-
-/**
- * Moves the schedule and its Short to `uploading` in one transaction, so two
- * overlapping runs can never upload the same Short. Null if there's nothing to upload.
- */
-async function claim(ref: DocumentReference): Promise<Claimed | null> {
-  const db = getFirestore();
-  const shortRef = db.collection(COLLECTIONS.shorts).doc(ref.id);
-  return db.runTransaction(async (tx) => {
-    const [scheduleSnap, shortSnap] = await tx.getAll(ref, shortRef);
-    const schedule = scheduleSnap.data() as ScheduleDoc | undefined;
-    const short = shortSnap.data() as ShortDoc | undefined;
-    if (!schedule || (schedule.status !== "scheduled" && schedule.status !== "quota_exceeded")) return null;
-
-    const now = FieldValue.serverTimestamp();
-    if (!short || short.userId !== schedule.userId) {
-      tx.update(ref, { status: "failed", errorMessage: "This Short no longer exists.", updatedAt: now });
-      return null;
-    }
-    if (short.youtubeVideoId) {
-      // Already on YouTube — never upload it twice.
-      tx.update(ref, { status: "published", youtubeVideoId: short.youtubeVideoId, errorMessage: null, updatedAt: now });
-      return null;
-    }
-    tx.update(ref, { status: "uploading", lastAttemptAt: now, updatedAt: now });
-    tx.update(shortRef, { status: "uploading", errorMessage: null });
-    return { ref, schedule, short };
-  });
-}
-
-/** "Check for copyright first": upload as Unlisted — off the channel page, but viewable enough for a block to show — and go public only once it plays. Only matters for a Short meant to be public. */
-function heldForCheck(schedule: ScheduleDoc, short: ShortDoc, canManage: boolean): boolean {
-  // Without permission to switch it to public afterwards, holding it back would strand it Unlisted — so it goes out public.
-  return schedule.safePublish === true && short.privacy === "public" && canManage;
-}
-
-/** Writes the result of an attempt to the schedule and its Short together. */
-async function settle({ ref, schedule, short }: Claimed, result: Settlement, prefs: NotificationPrefs) {
-  const db = getFirestore();
-  const shortRef = db.collection(COLLECTIONS.shorts).doc(ref.id);
-  const { userId } = schedule;
-  const now = FieldValue.serverTimestamp();
-  const batch = db.batch();
-
-  if (result.status === "published") {
-    const { youtubeVideoId, held } = result;
-    batch.update(ref, { status: "published", youtubeVideoId, errorMessage: null, updatedAt: now });
-    // Held back: it went up Unlisted and is released by releaseCheckedShorts once it is confirmed playable.
-    // It lives on YouTube now, so the copy in Storage only costs space. The thumbnail stays for the Shorts page.
-    const fileDeleted = await getStorage()
-      .bucket()
-      .file(short.storagePath)
-      .delete({ ignoreNotFound: true })
-      .then(() => true, (error) => (logger.warn("Couldn't delete uploaded Short's file", { shortId: ref.id, error: String(error) }), false));
-    batch.update(shortRef, {
-      status: "published",
-      youtubeVideoId,
-      publishedAt: now,
-      errorMessage: null,
-      pendingPrivacy: held ? short.privacy : null,
-      youtubeCheck: null,
-      ...(fileDeleted ? { fileDeletedAt: now } : {}),
-    });
-    logActivity(batch, userId, {
-      type: "YOUTUBE_UPLOAD_COMPLETED",
-      message: held ? `Uploaded “${short.title}” as Unlisted — checking it for copyright blocks` : `Published “${short.title}” to YouTube`,
-      refType: "short",
-      refId: ref.id,
-      connectionId: schedule.connectionId,
-    });
-    if (prefs.uploads && !held) {
-      notify(batch, userId, { kind: "success", title: "Short published", body: `“${short.title}” is now on YouTube.`, link: "/shorts" });
-    }
-  } else if (result.status === "scheduled") {
-    batch.update(ref, { status: "scheduled", updatedAt: now, ...(result.countAttempt ? { retryCount: FieldValue.increment(1) } : {}) });
-    batch.update(shortRef, { status: "scheduled" });
-  } else {
-    const { status, message } = result;
-    batch.update(ref, { status, errorMessage: message, updatedAt: now });
-    batch.update(shortRef, { status, errorMessage: message });
-    if (status === "failed") {
-      logActivity(batch, userId, {
-        type: "YOUTUBE_UPLOAD_FAILED",
-        message: `Couldn't publish “${short.title}” to YouTube`,
-        refType: "short",
-        refId: ref.id,
-        connectionId: schedule.connectionId,
-      });
-    }
-    if (prefs.failures) {
-      notify(batch, userId, {
-        kind: status === "failed" ? "error" : "warning",
-        title: status === "failed" ? "Short upload failed" : "YouTube upload limit reached",
-        body: message,
-        link: "/shorts",
-      });
-    }
-  }
-  await batch.commit();
-}
-
 /**
  * "Upload now": publishes these schedules straight away instead of waiting for
  * the next sweep. Stops early when out of time or when YouTube says no more;
- * whatever is left is still due, so the sweep picks it up. Returns how many went up.
+ * whatever is left is still due, so that channel's publish model picks it up.
  */
 export async function publishNow(shortIds: string[], deadline: number): Promise<number> {
   const db = getFirestore();
-  const run = startRun();
+  const context = createPublishContext();
   let published = 0;
   for (const shortId of shortIds) {
     if (Date.now() > deadline) break;
     const doc = await db.collection(COLLECTIONS.schedules).doc(shortId).get();
     if (!doc.exists) continue;
-    const outcome = await publishOne(doc, run);
+    const outcome = await publishOneForModel(doc, context);
     if (outcome === "published") published++;
-    if (outcome === "stop_run" || outcome === "pause_connection" || outcome === "pause_user") break;
+    if (outcome === "stop_run" || outcome === "pause_connection") break;
   }
   return published;
 }
 
-async function publishOne(doc: DocumentSnapshot, run: Run): Promise<Outcome> {
-  const connectionId = doc.get("connectionId") as string;
-  const connection = await run.connectionState(connectionId);
-  // Expired or revoked: the user has been asked to reconnect, and the Short goes out once they do.
-  if (connection === "paused") return "pause_connection";
-
-  const claimed = await claim(doc.ref);
-  if (!claimed) return "skipped";
-  const { schedule, short } = claimed;
-  const prefs = await run.prefs(schedule.userId);
-  const allowance = await run.allowance(schedule.userId);
-  if (allowance.used >= allowance.limit) {
-    const message = `You've published ${allowance.limit} Shorts today, the daily limit for each account. This Short will upload automatically once the limit resets.`;
-    await settle(claimed, { status: "quota_exceeded", message }, prefs);
-    return "pause_user";
-  }
-  const fail = (message: string) => settle(claimed, { status: "failed", message }, prefs);
-
-  if (connection === "missing") {
-    await fail("The YouTube channel for this Short was disconnected. Connect it again, then schedule this Short again.");
-    return "skipped";
-  }
-
-  const held = heldForCheck(schedule, short, await run.canManage(connectionId));
-  let youtubeVideoId: string;
-  try {
-    const accessToken = await getAccessToken(connectionId);
-    const source = await storageSource(short.storagePath);
-    if (!source) {
-      await fail("This Short's video file is missing. Generate it again from the original video.");
-      return "skipped";
-    }
-    // The Short's own metadata, as last edited — it stays editable until this moment.
-    youtubeVideoId = await uploadToYouTube(
-      accessToken,
-      { title: short.title, description: short.description, tags: short.tags, categoryId: short.categoryId, privacy: held ? "unlisted" : short.privacy },
-      source,
-    );
-  } catch (error) {
-    logger.warn("YouTube upload failed", { shortId: doc.id, connectionId, error: String(error), reason: error instanceof YouTubeUploadError ? error.reason : null });
-
-    if (error instanceof TokenRevokedError) {
-      // getAccessToken already marked the connection expired and asked the user to reconnect.
-      await settle(claimed, { status: "scheduled", countAttempt: false }, prefs);
-      return "pause_connection";
-    }
-    if (error instanceof YouTubeUploadError && error.kind !== "transient") {
-      switch (error.kind) {
-        case "quota":
-          await settle(claimed, { status: "quota_exceeded", message: "ShortFlow reached YouTube's daily upload limit. This Short will upload automatically once the limit resets." }, prefs);
-          return "stop_run";
-        case "upload_limit":
-          await settle(claimed, { status: "quota_exceeded", message: "Your channel reached YouTube's daily upload limit. This Short will upload automatically once the limit resets." }, prefs);
-          return "pause_connection";
-        case "auth":
-          await fail("YouTube refused access to this channel. Reconnect it on the YouTube page, then schedule this Short again.");
-          return "pause_connection";
-        case "rejected":
-          await fail(`YouTube rejected this Short: ${error.message.slice(0, 300)}`);
-          return "skipped";
-      }
-    }
-    // Network, Storage or YouTube server trouble — worth another go on a later sweep.
-    if (schedule.retryCount + 1 >= MAX_ATTEMPTS) {
-      await fail("YouTube couldn't be reached after several tries. Schedule this Short again to retry.");
-    } else {
-      await settle(claimed, { status: "scheduled", countAttempt: true }, prefs);
-    }
-    return "skipped";
-  }
-
-  // Outside the try on purpose: if this write fails the schedule stays `uploading`
-  // and is flagged as interrupted, rather than being retried into a duplicate video.
-  logger.info("Uploaded to YouTube", { shortId: doc.id, connectionId, youtubeVideoId });
-  await settle(claimed, { status: "published", youtubeVideoId, held }, prefs);
-  allowance.used++;
-  return "published";
-}
-
 /** A run that died mid-upload may or may not have created the video, so these are never retried automatically. */
-async function failStuckUploads(run: Run) {
+async function failStuckUploads(context: PublishContext) {
   const db = getFirestore();
   const cutoff = Date.now() - STUCK_AFTER_MS;
   // Filtered on publishAt so the (status, publishAt) index serves it; a claimed schedule was already due.
@@ -333,12 +65,14 @@ async function failStuckUploads(run: Run) {
       await doc.ref.update({ status: "failed", errorMessage: "This Short no longer exists.", updatedAt: FieldValue.serverTimestamp() });
       continue;
     }
-    await settle(
+    const [prefs, link] = await Promise.all([context.prefs(schedule.userId, schedule.connectionId), context.channelLink(schedule.connectionId)]);
+    await settleSchedule(
       { ref: doc.ref, schedule, short },
       { status: "failed", message: "The upload was interrupted. Check your channel first — if the Short isn't there, schedule it again." },
-      await run.prefs(schedule.userId),
+      prefs,
+      link,
     );
-    logger.warn("Flagged interrupted upload", { shortId: doc.id });
+    logger.warn("Flagged interrupted upload", { shortId: doc.id, connectionId: schedule.connectionId });
   }
 }
 
@@ -349,10 +83,10 @@ const CHECK_GIVE_UP_MS = 3 * 60 * 60 * 1000;
 
 /**
  * Second half of "check for copyright first". For each Short that went up
- * Private and is waiting: ask YouTube how it is doing, then either switch it to
- * the visibility the user wanted, or leave it Private and say why.
+ * Unlisted and is waiting: ask YouTube how it is doing, then either switch it to
+ * the visibility the user wanted, or leave it Unlisted and say why.
  */
-async function releaseCheckedShorts(run: Run) {
+async function releaseCheckedShorts(context: PublishContext) {
   const db = getFirestore();
   const waiting = await db.collection(COLLECTIONS.shorts).where("pendingPrivacy", "==", "public").limit(PAGE_SIZE).get();
 
@@ -362,15 +96,15 @@ async function releaseCheckedShorts(run: Run) {
     const age = Date.now() - (short.publishedAt?.toMillis() ?? Date.now());
     if (age < CHECK_AFTER_MS || !short.youtubeVideoId || !short.pendingPrivacy) continue;
 
-    const connectionId = (await db.collection(COLLECTIONS.schedules).doc(doc.id).get()).get("connectionId") as string | undefined;
-    if (!connectionId || (await run.connectionState(connectionId)) !== "connected") continue;
+    const connectionId = short.connectionId ?? ((await db.collection(COLLECTIONS.schedules).doc(doc.id).get()).get("connectionId") as string | undefined);
+    if (!connectionId || (await context.connectionState(connectionId)) !== "connected") continue;
 
-    const prefs = await run.prefs(short.userId);
+    const [prefs, link] = await Promise.all([context.prefs(short.userId, connectionId), context.channelLink(connectionId)]);
     const finish = async (state: YoutubeCheckState, detail: string, notice: { kind: "success" | "error" | "warning"; title: string } | null) => {
       const batch = db.batch();
       batch.update(doc.ref, { pendingPrivacy: null, youtubeCheck: { state, detail, checkedAt: FieldValue.serverTimestamp() } });
       if (notice && (notice.kind === "success" ? prefs.uploads : prefs.failures)) {
-        notify(batch, short.userId, { kind: notice.kind, title: notice.title, body: `“${short.title}”: ${detail}`, link: "/shorts" });
+        notify(batch, short.userId, { kind: notice.kind, title: notice.title, body: `“${short.title}”: ${detail}`, link });
       }
       await batch.commit();
     };
@@ -384,16 +118,14 @@ async function releaseCheckedShorts(run: Run) {
       }
       if (status.state !== "live") {
         await finish(status.state, `${status.detail} It was kept off your channel page (Unlisted).`, { kind: "error", title: "Short blocked on YouTube" });
-        logger.info("Held Short kept private", { shortId: doc.id, state: status.state });
+        logger.info("Held Short kept private", { shortId: doc.id, connectionId, state: status.state });
         continue;
       }
 
-      // YouTube's own report (not blocked, not rejected) decides. The viewer's-eye check only adds detail when it
-      // works: from a data centre the watch page often can't be read, and waiting on it stranded clear Shorts Unlisted.
       const released = await setVideoPrivacy(accessToken, short.youtubeVideoId, short.pendingPrivacy);
       if (released) {
         await finish("live", `No blocks reported, so it was made ${short.pendingPrivacy}.`, { kind: "success", title: "Short published" });
-        logger.info("Held Short released", { shortId: doc.id, privacy: short.pendingPrivacy });
+        logger.info("Held Short released", { shortId: doc.id, connectionId, privacy: short.pendingPrivacy });
       } else {
         await finish("live", "No blocks reported, but ShortFlow isn't allowed to change its visibility. Reconnect your channel on the YouTube page, or make it public in YouTube Studio.", {
           kind: "warning",
@@ -401,15 +133,14 @@ async function releaseCheckedShorts(run: Run) {
         });
       }
     } catch (error) {
-      // Token or network trouble: leave it waiting and try again on the next sweep.
-      logger.warn("Copyright check postponed", { shortId: doc.id, error: String(error) });
+      logger.warn("Copyright check postponed", { shortId: doc.id, connectionId, error: String(error) });
     }
   }
 }
 
 /**
- * Uploads every Short whose schedule is due. Runs in the bucket's region because
- * it streams the video bytes from Storage to YouTube.
+ * Triggers each connected YouTube channel's own independent publish model.
+ * Runs in the Storage bucket's region because uploads stream video bytes directly to YouTube.
  */
 export const publishDueShorts = onSchedule(
   {
@@ -426,57 +157,56 @@ export const publishDueShorts = onSchedule(
   async () => {
     const db = getFirestore();
     const startedAt = Date.now();
-    const run = startRun();
-    await failStuckUploads(run);
-    await releaseCheckedShorts(run).catch((error) => logger.error("Releasing checked Shorts failed", { error: String(error) }));
+    const deadline = startedAt + RUN_BUDGET_MS;
+    const context = createPublishContext();
 
-    const quotaResetMs = lastQuotaResetMs(startedAt);
-    const paused = new Set<string>();
-    const pausedUsers = new Set<string>();
-    const perUser = new Map<string, number>();
-    let published = 0;
-    let cursor: QueryDocumentSnapshot | undefined;
+    await failStuckUploads(context);
+    await releaseCheckedShorts(context).catch((error) => logger.error("Releasing checked Shorts failed", { error: String(error) }));
 
-    sweep: while (true) {
-      let query = db
-        .collection(COLLECTIONS.schedules)
-        .where("status", "in", ["scheduled", "quota_exceeded"])
-        .where("publishAt", "<=", Timestamp.fromMillis(startedAt))
-        .orderBy("publishAt")
-        .limit(PAGE_SIZE);
-      if (cursor) query = query.startAfter(cursor);
-      const page = await query.get();
+    // Enumerate active channels so every channel runs its own isolated query, budget and publish model.
+    const connectionsSnap = await db.collection(COLLECTIONS.youtubeConnections).where("status", "==", "connected").get();
+    const channels: ChannelTarget[] = connectionsSnap.docs.map((doc) => {
+      const data = doc.data() as YoutubeConnectionDoc;
+      return {
+        connectionId: doc.id,
+        userId: data.userId,
+        channelId: data.channelId,
+        channelTitle: data.channelTitle,
+      };
+    });
 
-      // A channel that hit a limit since the last quota reset waits for the next one.
-      for (const doc of page.docs) {
-        const schedule = doc.data() as ScheduleDoc;
-        if (schedule.status === "quota_exceeded" && (schedule.lastAttemptAt?.toMillis() ?? 0) >= quotaResetMs) {
-          paused.add(schedule.connectionId);
+    let stopAll = false;
+    let nextIndex = 0;
+    const results: ChannelPublishResult[] = [];
+    const workerCount = Math.min(MAX_CHANNEL_CONCURRENCY, channels.length);
+
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (nextIndex < channels.length) {
+          if (stopAll || Date.now() > deadline) break;
+          const channel = channels[nextIndex++];
+          const result = await runChannelPublishModel(
+            channel,
+            context,
+            startedAt,
+            deadline,
+            () => stopAll,
+            () => {
+              stopAll = true;
+            },
+          );
+          results.push(result);
         }
-      }
+      }),
+    );
 
-      for (const doc of page.docs) {
-        if (published >= MAX_UPLOADS_PER_RUN || Date.now() - startedAt > RUN_BUDGET_MS) break sweep;
-        const connectionId = doc.get("connectionId") as string;
-        const userId = doc.get("userId") as string;
-        if (paused.has(connectionId) || pausedUsers.has(userId)) continue;
-        // Past this run's share: still due, so the next run picks it up.
-        if ((perUser.get(userId) ?? 0) >= MAX_UPLOADS_PER_USER_PER_RUN) continue;
-
-        const outcome = await publishOne(doc, run);
-        if (outcome === "stop_run") break sweep;
-        if (outcome === "pause_connection") paused.add(connectionId);
-        if (outcome === "pause_user") pausedUsers.add(userId);
-        if (outcome === "published") {
-          published++;
-          perUser.set(userId, (perUser.get(userId) ?? 0) + 1);
-        }
-      }
-
-      if (page.size < PAGE_SIZE) break;
-      cursor = page.docs[page.docs.length - 1];
-    }
-
-    logger.info("Publish sweep", { published, pausedConnections: paused.size, usersAtLimit: pausedUsers.size });
+    const published = results.reduce((sum, r) => sum + r.published, 0);
+    const pausedConnections = results.filter((r) => r.pausedByQuota).length;
+    logger.info("Publish sweep", {
+      published,
+      channelsProcessed: results.length,
+      pausedConnections,
+      stoppedEarly: stopAll,
+    });
   },
 );

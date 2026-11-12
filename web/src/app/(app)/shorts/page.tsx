@@ -6,7 +6,8 @@ import { CalendarClock, Clapperboard, Download, FolderUp, ListPlus, ShieldCheck,
 import { DEFAULT_SETTINGS, directUploadVideoId, slotRulesFrom, type ShortDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useChannelBanners, useChannelShorts, useChannelWork, useChannels } from "@/components/providers/channel-provider";
-import { useSchedules, useSettings, useVideos, type WithId } from "@/lib/firebase/hooks";
+import { ChannelTabs } from "@/components/layout/channel-tabs";
+import { useChannelSchedules, useChannelSettings, useSchedules, useVideos, type WithId } from "@/lib/firebase/hooks";
 import { describeSchedule, previewSlots, scheduleFacts } from "@/lib/schedule";
 import { canQueue, checkYouTubeStatus, deleteShorts, downloadShorts, isBlockedOnYouTube, matchesShortFilter, needsYouTubeCheck, queueShorts, type ShortFilter } from "@/lib/shorts";
 import { describeImport } from "@/lib/work/work-provider";
@@ -40,18 +41,25 @@ export default function GeneratedShortsPage() {
   const uid = user?.uid;
   // With several channels connected, the page is about the one picked in the top bar.
   const { data: shorts, loading, error } = useChannelShorts(uid);
-  const { connections, loading: connectionsLoading, active, multi } = useChannels();
+  const { connections, loading: connectionsLoading, active, multi, hrefFor } = useChannels();
   const { data: videos } = useVideos(uid);
-  const { data: settings } = useSettings(uid);
-  const { data: schedules } = useSchedules(uid);
+  const { data: settings } = useChannelSettings(uid, active?.id);
+  const { data: allSchedules } = useSchedules(uid);
+  const { data: channelSchedules } = useChannelSchedules(uid, active?.id);
+  const schedules = active ? channelSchedules : allSchedules;
   const { data: banners } = useChannelBanners(uid);
 
+  const channelKey = active?.id ?? "default";
   const [filter, setFilter] = useState<ShortFilter>("all");
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [openId, setOpenId] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<{ ids: string[]; slots: number[]; now: boolean } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [banner, setBanner] = useState<Banner>(null);
+  const [confirming, setConfirming] = useState<{ channelId: string | undefined; ids: string[]; slots: number[]; now: boolean } | null>(null);
+  const [busyChannels, setBusyChannels] = useState<ReadonlySet<string>>(new Set());
+  const [bannersByChannel, setBannersByChannel] = useState<Record<string, Banner>>({});
+  const busy = busyChannels.has(channelKey);
+  const banner = bannersByChannel[channelKey] ?? null;
+  const setBannerFor = (key: string, next: Banner) => setBannersByChannel((current) => ({ ...current, [key]: next }));
+  const setBanner = (next: Banner) => setBannerFor(channelKey, next);
   /** Upload as Unlisted, and go public only once it is confirmed to play (no copyright block). */
   const [checkFirst, setCheckFirst] = useState(true);
 
@@ -182,18 +190,18 @@ export default function GeneratedShortsPage() {
   }
 
   // Once the Shorts have loaded, quietly check the uploaded ones that haven't been looked at lately.
-  const autoChecked = useRef(false);
+  const autoChecked = useRef(new Set<string>());
   useEffect(() => {
-    if (autoChecked.current || loading) return;
-    autoChecked.current = true;
+    if (loading || autoChecked.current.has(channelKey)) return;
+    autoChecked.current.add(channelKey);
     const due = shorts.filter((s) => needsYouTubeCheck(s, Date.now())).slice(0, 15);
     // No spinner or banner for this one: the answers simply appear on the cards.
     void (async () => {
       for (const short of due) await checkYouTubeStatus(short.id).catch(() => undefined);
     })();
-    // Runs once per visit; `shorts` is read at that moment on purpose.
+    // Runs once per channel per visit; `shorts` is read at that moment on purpose.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading]);
+  }, [loading, channelKey]);
 
   const uploaded = ordered.filter((s) => s.status === "published" && s.youtubeVideoId);
 
@@ -222,16 +230,18 @@ export default function GeneratedShortsPage() {
 
   /** Opens the confirmation with the slots the server is about to hand out, so it can say when things go live. */
   function askToQueue(ids: string[]) {
-    setConfirming({ ids, slots: previewSlots(rules, ids.length, schedules), now: false });
+    setConfirming({ channelId: active?.id, ids, slots: previewSlots(rules, ids.length, schedules), now: false });
   }
 
   /** True once queued; on failure the reason goes in the banner. `now` skips the schedule. */
   async function submit(ids: string[], now = false): Promise<boolean> {
-    setBusy(true);
-    setBanner(null);
+    const targetChannelId = active?.id;
+    const key = targetChannelId ?? "default";
+    setBusyChannels((current) => new Set(current).add(key));
+    setBannerFor(key, null);
     try {
-      const result = await queueShorts(ids, multi ? active?.id : undefined, now, checkFirst);
-      setBanner({
+      const result = await queueShorts(ids, targetChannelId, now, checkFirst);
+      setBannerFor(key, {
         tone: "success",
         message: now
           ? result.uploaded === result.queued
@@ -244,15 +254,20 @@ export default function GeneratedShortsPage() {
       setSelected(new Set());
       return true;
     } catch (err) {
-      setBanner({ tone: "error", message: friendlyCallableError(err) });
+      setBannerFor(key, { tone: "error", message: friendlyCallableError(err) });
       return false;
     } finally {
-      setBusy(false);
+      setBusyChannels((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
       setConfirming(null);
     }
   }
 
-  const preview = confirming?.slots ?? [];
+  const activeConfirm = confirming?.channelId === active?.id ? confirming : null;
+  const preview = activeConfirm?.slots ?? [];
   // With several channels the confirmation names the one these are going to.
   const destinations = multi && active ? active.channelTitle : "";
 
@@ -260,8 +275,8 @@ export default function GeneratedShortsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="lg:max-w-md">
-          <h2 className="text-2xl font-semibold tracking-tight">Generated Shorts</h2>
-          <p className="mt-1 text-sm text-muted">Every vertical Short cut from your videos, or uploaded from your files. Open one to set its title, description and keywords, then submit it to the queue.</p>
+          <h2 className="text-2xl font-semibold tracking-tight">Generated Shorts{multi && active ? ` · ${active.channelTitle}` : ""}</h2>
+          <p className="mt-1 text-sm text-muted">Every vertical Short cut from your videos, or uploaded from your files. Open one to set its title, description and keywords, then submit it to this channel&apos;s queue.</p>
         </div>
         <div className="flex shrink-0 flex-col gap-2 lg:items-end">
           {/* Top row: bring Shorts in, clear them out, check them. Below it: send them on. */}
@@ -301,7 +316,7 @@ export default function GeneratedShortsPage() {
                 variant="secondary"
                 icon={<Upload className="size-4" />}
                 disabled={busy || target.length === 0 || !canPublish}
-                onClick={() => setConfirming({ ids: target, slots: [], now: true })}
+                onClick={() => setConfirming({ channelId: active?.id, ids: target, slots: [], now: true })}
               >
                 {picked.length > 0 ? `Upload ${picked.length} now` : `Upload all ${allReady.length} now`}
               </Button>
@@ -324,6 +339,8 @@ export default function GeneratedShortsPage() {
           }}
         />
       </div>
+
+      <ChannelTabs caption="Each channel queues and uploads independently" />
 
       {banner && (
         <Alert tone={banner.tone} onDismiss={() => setBanner(null)}>
@@ -377,7 +394,7 @@ export default function GeneratedShortsPage() {
               </>
             )}
           </p>
-          <ButtonLink href="/youtube" variant="secondary" size="sm">
+          <ButtonLink href={hrefFor("/youtube")} variant="secondary" size="sm">
             {connections.length > 0 ? "Reconnect YouTube" : "Connect YouTube"}
           </ButtonLink>
         </Card>
@@ -415,7 +432,7 @@ export default function GeneratedShortsPage() {
                 </span>
               ))}
             </span>
-            <Link href="/schedule" className="ml-auto font-medium text-accent hover:underline">
+            <Link href={hrefFor("/schedule")} className="ml-auto font-medium text-accent hover:underline">
               Change
             </Link>
           </div>
@@ -435,7 +452,7 @@ export default function GeneratedShortsPage() {
             title="No Shorts yet"
             description="Upload a video, press Generate Shorts on it and choose how long each Short should be — or add Shorts you already have with “Upload Shorts from files” above."
             action={
-              <ButtonLink href="/videos" icon={<Upload className="size-4" />}>
+              <ButtonLink href={hrefFor("/videos")} icon={<Upload className="size-4" />}>
                 Go to Videos
               </ButtonLink>
             }
@@ -527,15 +544,15 @@ export default function GeneratedShortsPage() {
       />
 
       <ConfirmDialog
-        open={confirming !== null}
+        open={activeConfirm !== null}
         tone="primary"
         title={
-          confirming?.now
-            ? confirming.ids.length === 1 ? "Upload this Short to YouTube now?" : `Upload ${confirming.ids.length} Shorts to YouTube now?`
-            : confirming?.ids.length === 1 ? "Add this Short to the queue?" : `Add ${confirming?.ids.length ?? 0} Shorts to the queue?`
+          activeConfirm?.now
+            ? activeConfirm.ids.length === 1 ? "Upload this Short to YouTube now?" : `Upload ${activeConfirm.ids.length} Shorts to YouTube now?`
+            : activeConfirm?.ids.length === 1 ? "Add this Short to the queue?" : `Add ${activeConfirm?.ids.length ?? 0} Shorts to the queue?`
         }
         description={
-          confirming?.now ? (
+          activeConfirm?.now ? (
             <>
               They skip your schedule and start uploading within 5 minutes, one after another, each with the title, description, keywords and visibility it has right now.
               {destinations && (
@@ -564,9 +581,9 @@ export default function GeneratedShortsPage() {
             "Your schedule has no publishing days. Pick at least one on the Schedule page first."
           )
         }
-        confirmLabel={confirming?.now ? "Upload now" : "Submit to queue"}
+        confirmLabel={activeConfirm?.now ? "Upload now" : "Submit to queue"}
         loading={busy}
-        onConfirm={() => confirming && void submit(confirming.ids, confirming.now)}
+        onConfirm={() => activeConfirm && void submit(activeConfirm.ids, activeConfirm.now)}
         onCancel={() => setConfirming(null)}
       />
     </div>

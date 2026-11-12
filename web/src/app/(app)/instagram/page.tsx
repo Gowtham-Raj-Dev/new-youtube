@@ -7,7 +7,7 @@ import { Check, Clapperboard, Download, ExternalLink, FolderUp, KeyRound, Link2,
 import { DEFAULT_SETTINGS, formatDuration } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useChannelBanners, useChannelWork, useChannels } from "@/components/providers/channel-provider";
-import { useSettings } from "@/lib/firebase/hooks";
+import { useChannelSettings } from "@/lib/firebase/hooks";
 import {
   InstagramError,
   fetchInstagramVideo,
@@ -80,7 +80,7 @@ function InstagramDownloader() {
   const { user } = useAuth();
   const uid = user?.uid;
   const { active, hrefFor } = useChannels();
-  const { data: settings } = useSettings(uid);
+  const { data: settings } = useChannelSettings(uid, active?.id);
   const { data: banners } = useChannelBanners(uid);
   const { importJob, startImport, dismissImport } = useChannelWork();
 

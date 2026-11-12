@@ -5,7 +5,9 @@ import type { User } from "firebase/auth";
 import { ArrowRight, CalendarClock, LogOut } from "lucide-react";
 import { DEFAULT_SETTINGS, OUTPUT_QUALITIES, PRIVACY_STATUSES, shortTitle, type OutputQuality, type PrivacyStatus, type UserDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useSettings, useUserDoc } from "@/lib/firebase/hooks";
+import { useChannels } from "@/components/providers/channel-provider";
+import { ChannelTabs } from "@/components/layout/channel-tabs";
+import { useChannelSettings, useUserDoc } from "@/lib/firebase/hooks";
 import { saveProfile, signOut } from "@/lib/firebase/auth";
 import { saveSettings, type EditableSettings } from "@/lib/schedule";
 import { tagChars, TAG_CHARS_MAX } from "@/lib/shorts";
@@ -128,9 +130,31 @@ function Choice({ label, hint, children }: { label: string; hint: string; childr
   );
 }
 
-function SettingsForm({ user, profile, settings }: { user: User; profile: UserDoc | null; settings: EditableSettings }) {
+function SettingsForm({
+  user,
+  profile,
+  settings,
+  userSettings,
+  channelId,
+  channelTitle,
+  multi,
+  hrefFor,
+}: {
+  user: User;
+  profile: UserDoc | null;
+  settings: EditableSettings;
+  userSettings: EditableSettings | null;
+  channelId: string | undefined;
+  channelTitle: string | undefined;
+  multi: boolean;
+  hrefFor: (href: string) => string;
+}) {
   const savedName = profile?.displayName ?? user.displayName ?? "";
-  const saved = useMemo(() => formFrom(savedName, settings), [savedName, settings]);
+  const effectiveNotifs = userSettings?.notifications ?? settings.notifications;
+  const saved = useMemo(
+    () => formFrom(savedName, { ...settings, notifications: effectiveNotifs }),
+    [savedName, settings, effectiveNotifs],
+  );
   const [form, setForm] = useState(saved);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ tone: "success" | "error"; message: string } | null>(null);
@@ -149,7 +173,8 @@ function SettingsForm({ user, profile, settings }: { user: User; profile: UserDo
     setBusy(true);
     setNotice(null);
     try {
-      await saveSettings(user.uid, {
+      const nextNotifications = { ...effectiveNotifs, uploads: form.notifyUploads, failures: form.notifyFailures };
+      const nextChannelSettings: EditableSettings = {
         ...settings,
         processing: { ...settings.processing, cropMode: form.framing, outputQuality: form.quality },
         publishing: {
@@ -161,12 +186,25 @@ function SettingsForm({ user, profile, settings }: { user: User; profile: UserDo
           defaultPrivacy: form.privacy,
           categoryId: form.categoryId,
         },
-        notifications: { ...settings.notifications, uploads: form.notifyUploads, failures: form.notifyFailures },
-      });
-      // One timezone for the whole app: dates on screen follow the profile, the queue follows the settings.
-      if (profile && (name !== savedName || form.timezone !== profile.timezone)) await saveProfile(user, name, form.timezone);
+        notifications: nextNotifications,
+      };
+      await saveSettings(channelId ?? user.uid, nextChannelSettings, user.uid);
+      const notifsChanged =
+        !userSettings ||
+        nextNotifications.uploads !== userSettings.notifications.uploads ||
+        nextNotifications.failures !== userSettings.notifications.failures;
+      if (channelId && notifsChanged) {
+        await saveSettings(
+          user.uid,
+          userSettings ? { ...userSettings, notifications: nextNotifications } : nextChannelSettings,
+          user.uid,
+        );
+      }
+      // Keep the profile timezone aligned for single-channel accounts without overwriting it per channel.
+      const nextProfileZone = multi ? (profile?.timezone ?? form.timezone) : form.timezone;
+      if (profile && (name !== savedName || nextProfileZone !== profile.timezone)) await saveProfile(user, name, nextProfileZone);
       setForm((current) => ({ ...current, name, titleTemplate }));
-      setNotice({ tone: "success", message: "Settings saved." });
+      setNotice({ tone: "success", message: multi && channelTitle ? `Settings saved for ${channelTitle}.` : "Settings saved." });
     } catch {
       setNotice({ tone: "error", message: "Couldn't save your settings. Check your connection and try again." });
     }
@@ -197,7 +235,10 @@ function SettingsForm({ user, profile, settings }: { user: User; profile: UserDo
       </Card>
 
       <Card>
-        <CardHeader title="Cutting Shorts" description="What the studio starts with when you open a video. You can still change the framing for each video." />
+        <CardHeader
+          title={multi && channelTitle ? `Cutting Shorts — ${channelTitle}` : "Cutting Shorts"}
+          description="What the studio starts with when you open a video. You can still change the framing for each video."
+        />
         <div className="grid gap-5 p-5 sm:grid-cols-2">
           <Choice label="Framing" hint={FRAMING_HINTS[form.framing]}>
             <Segmented label="Framing" options={FRAMINGS} labels={FRAMING_LABELS} value={form.framing} onChange={(framing) => set({ framing })} />
@@ -209,7 +250,10 @@ function SettingsForm({ user, profile, settings }: { user: User; profile: UserDo
       </Card>
 
       <Card>
-        <CardHeader title="Details for new Shorts" description="Every Short you generate starts with these. Shorts you already made keep theirs, and you can edit each one on the Shorts page." />
+        <CardHeader
+          title={multi && channelTitle ? `Details for new Shorts — ${channelTitle}` : "Details for new Shorts"}
+          description="Every Short you generate on this channel starts with these. Shorts you already made keep theirs, and you can edit each one on the Shorts page."
+        />
         <div className="space-y-5 p-5">
           <div>
             <Field label="Title" counter={`${form.titleTemplate.length} / 200`} error={titleTemplate.length === 0}>
@@ -289,7 +333,7 @@ function SettingsForm({ user, profile, settings }: { user: User; profile: UserDo
               <CalendarClock className="size-4 shrink-0 text-accent" />
               <span className="min-w-0">Upload times, days and the daily limit</span>
             </p>
-            <ButtonLink href="/schedule" variant="secondary" size="sm">
+            <ButtonLink href={hrefFor("/schedule")} variant="secondary" size="sm">
               Schedule
               <ArrowRight className="size-3.5" />
             </ButtonLink>
@@ -297,9 +341,9 @@ function SettingsForm({ user, profile, settings }: { user: User; profile: UserDo
           <div className="flex items-center justify-between gap-4 py-3">
             <p className="flex min-w-0 items-center gap-2.5 text-[13.5px]">
               <YouTubeIcon className="size-4 shrink-0" />
-              <span className="min-w-0">{profile?.youtubeConnected ? "Your connected YouTube channel" : "Connect a YouTube channel"}</span>
+              <span className="min-w-0">{profile?.youtubeConnected ? "Your connected YouTube channels" : "Connect a YouTube channel"}</span>
             </p>
-            <ButtonLink href="/youtube" variant="secondary" size="sm">
+            <ButtonLink href={hrefFor("/youtube")} variant="secondary" size="sm">
               YouTube
               <ArrowRight className="size-3.5" />
             </ButtonLink>
@@ -343,15 +387,18 @@ function SettingsForm({ user, profile, settings }: { user: User; profile: UserDo
 
 export default function SettingsPage() {
   const { user } = useAuth();
+  const { active, multi, hrefFor } = useChannels();
   const { data: profile, loading: profileLoading } = useUserDoc(user?.uid);
-  const { data: settings, loading, error } = useSettings(user?.uid);
+  const { data: settings, userSettings, loading, error } = useChannelSettings(user?.uid, active?.id);
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Settings</h2>
-        <p className="mt-1 text-sm text-muted">Your profile, and what new Shorts start with.</p>
+        <h2 className="text-2xl font-semibold tracking-tight">Settings{multi && active ? ` · ${active.channelTitle}` : ""}</h2>
+        <p className="mt-1 text-sm text-muted">Your account preferences, and the defaults each channel uses for new Shorts.</p>
       </div>
+
+      <ChannelTabs caption="Select a channel to edit its defaults" />
 
       {error && <Alert tone="error">We couldn&apos;t load your settings. Check your connection and refresh the page.</Alert>}
 
@@ -363,7 +410,19 @@ export default function SettingsPage() {
           <Skeleton className="h-24 w-full" />
         </Card>
       ) : (
-        !error && <SettingsForm user={user} profile={profile} settings={settings ?? DEFAULT_SETTINGS} />
+        !error && (
+          <SettingsForm
+            key={active?.id ?? "default"}
+            user={user}
+            profile={profile}
+            settings={settings ?? DEFAULT_SETTINGS}
+            userSettings={userSettings}
+            channelId={active?.id}
+            channelTitle={active?.channelTitle}
+            multi={multi}
+            hrefFor={hrefFor}
+          />
+        )
       )}
 
       <YourDataCard />

@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Check } from "lucide-react";
 import { Logo, YouTubeIcon } from "@/components/ui/brand-icons";
 import { useChannels } from "@/components/providers/channel-provider";
 import { cn } from "@/lib/cn";
 import { useAuth } from "@/components/providers/auth-provider";
+import { Avatar } from "./avatar";
 import { MAIN_NAV, isActive, type NavItem } from "./nav";
 import { ProfileMenu } from "./profile-menu";
 
@@ -36,7 +38,7 @@ function NavLink({ item, pathname, onNavigate }: { item: NavItem; pathname: stri
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { user } = useAuth();
-  const { hrefFor } = useChannels();
+  const { connections, active, multi, switchTo, hrefFor } = useChannels();
 
   return (
     <div className="flex h-full flex-col">
@@ -47,6 +49,34 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </div>
 
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-2">
+        {multi && (
+          <div className="mb-4 space-y-1">
+            <p className="px-3 pb-1 pt-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-faint">Channels</p>
+            {connections.map((c) => {
+              const current = c.id === active?.id;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => {
+                    switchTo(c.id);
+                    onNavigate?.();
+                  }}
+                  aria-current={current ? "page" : undefined}
+                  className={cn(
+                    "relative flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium transition-colors",
+                    current ? "bg-accent-soft text-text" : "text-muted hover:bg-white/[0.04] hover:text-text",
+                  )}
+                >
+                  {current && <span className="absolute inset-y-2 -left-3 w-[3px] rounded-r-full bg-accent shadow-[0_0_12px_var(--accent)]" />}
+                  <Avatar name={c.channelTitle} src={c.channelThumbnailUrl} className="size-5 text-[10px]" />
+                  <span className="min-w-0 flex-1 truncate">{c.channelTitle}</span>
+                  {current && <Check className="size-3.5 shrink-0 text-accent" />}
+                </button>
+              );
+            })}
+          </div>
+        )}
         <p className="px-3 pb-2 pt-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-faint">Workspace</p>
         {MAIN_NAV.map((item) => (
           <NavLink key={item.href} item={item} pathname={pathname} onNavigate={onNavigate} />

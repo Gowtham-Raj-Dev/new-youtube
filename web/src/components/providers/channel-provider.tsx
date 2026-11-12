@@ -48,7 +48,7 @@ function readSaved(uid: string | undefined) {
   }
 }
 
-function withChannel(href: string, channelId: string | undefined) {
+export function withChannel(href: string, channelId: string | undefined) {
   const [path, search = ""] = href.split("?");
   const params = new URLSearchParams(search);
   if (channelId) params.set(CHANNEL_PARAM, channelId);

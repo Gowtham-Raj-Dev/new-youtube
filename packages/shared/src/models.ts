@@ -111,7 +111,10 @@ export interface UserDoc {
   youtubeConnected: boolean;
 }
 
-/** settings/{uid} */
+/**
+ * settings/{uid} for account-wide defaults & notification preferences, and
+ * settings/{connectionId} for per-channel schedule, publishing & Short defaults.
+ */
 export interface SettingsDoc {
   userId: string;
   processing: {

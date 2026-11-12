@@ -19,6 +19,7 @@ const OWNED_COLLECTIONS = [
   COLLECTIONS.activityLogs,
   COLLECTIONS.notifications,
   COLLECTIONS.autoShorts,
+  COLLECTIONS.settings,
 ] as const;
 
 /**
@@ -58,7 +59,6 @@ export const deleteAccount = onCall({ secrets: [TOKEN_ENCRYPTION_KEY], timeoutSe
     const docs = await db.collection(name).where("userId", "==", userId).select().get();
     for (const doc of docs.docs) void writer.delete(doc.ref);
   }
-  void writer.delete(db.collection(COLLECTIONS.settings).doc(userId));
   await writer.close();
   await db.recursiveDelete(db.collection(COLLECTIONS.users).doc(userId));
 

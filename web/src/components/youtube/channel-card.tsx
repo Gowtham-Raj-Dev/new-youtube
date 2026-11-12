@@ -2,8 +2,10 @@
 
 /* eslint-disable @next/next/no-img-element -- YouTube avatars in a static export */
 import { useState } from "react";
-import { Link2, RefreshCw, TriangleAlert, Unplug } from "lucide-react";
+import Link from "next/link";
+import { CalendarClock, Clapperboard, Layers, Link2, RefreshCw, TriangleAlert, Unplug } from "lucide-react";
 import type { YoutubeConnectionDoc } from "@shortflow/shared";
+import { withChannel } from "@/components/providers/channel-provider";
 import type { WithId } from "@/lib/firebase/hooks";
 import { connectYouTube, disconnectYouTube, friendlyCallableError, refreshYouTubeChannel } from "@/lib/youtube";
 import { formatInZone, toDate } from "@/lib/time";
@@ -93,6 +95,31 @@ export function ChannelCard({
           </Button>
         </div>
       </div>
+
+      {!expired && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-white/[0.02] px-4 py-2.5 text-[12.5px]">
+          <p className="text-muted">
+            <span className="font-medium text-text">Separate queue:</span>{" "}
+            {waiting.total === 0
+              ? "Empty — next Short queues immediately without waiting on other channels."
+              : `${waiting.total} queued${waiting.nextAt ? ` · next ${waiting.nextAt}` : " · ready to upload"}`}
+          </p>
+          <div className="flex items-center gap-3">
+            <Link href={withChannel("/shorts", connection.channelId)} className="inline-flex items-center gap-1 font-medium text-muted hover:text-text">
+              <Clapperboard className="size-3.5" />
+              Shorts
+            </Link>
+            <Link href={withChannel("/queue", connection.channelId)} className="inline-flex items-center gap-1 font-medium text-accent hover:underline">
+              <Layers className="size-3.5" />
+              Queue
+            </Link>
+            <Link href={withChannel("/schedule", connection.channelId)} className="inline-flex items-center gap-1 font-medium text-muted hover:text-text">
+              <CalendarClock className="size-3.5" />
+              Schedule
+            </Link>
+          </div>
+        </div>
+      )}
 
       {expired && (
         <div className="mt-5 flex items-start gap-3 rounded-xl border border-danger/25 bg-danger/10 px-4 py-3">

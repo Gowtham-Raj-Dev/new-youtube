@@ -7,9 +7,9 @@ import { toDate } from "./time";
 export type EditableSettings = Pick<SettingsDoc, "processing" | "publishing" | "automation" | "storage" | "notifications">;
 
 /** Writes the whole settings doc — firestore.rules validates every field, so partial writes aren't allowed. */
-export async function saveSettings(uid: string, settings: EditableSettings) {
-  await setDoc(doc(firebase().db, COLLECTIONS.settings, uid), {
-    userId: uid,
+export async function saveSettings(targetId: string, settings: EditableSettings, userId = targetId) {
+  await setDoc(doc(firebase().db, COLLECTIONS.settings, targetId), {
+    userId,
     processing: settings.processing,
     publishing: settings.publishing,
     automation: settings.automation,
@@ -19,9 +19,12 @@ export async function saveSettings(uid: string, settings: EditableSettings) {
   });
 }
 
-/** Moves every Short still waiting in the queue onto the saved schedule, keeping their order. */
-export async function rescheduleQueue(): Promise<{ moved: number; firstAt: number | null; lastAt: number | null }> {
-  const { data } = await httpsCallable<void, { moved: number; firstAt: number | null; lastAt: number | null }>(firebase().functions, "rescheduleQueue")();
+/** Moves every Short still waiting in a channel's queue onto its saved schedule, keeping order. */
+export async function rescheduleQueue(connectionId?: string): Promise<{ moved: number; firstAt: number | null; lastAt: number | null }> {
+  const { data } = await httpsCallable<{ connectionId?: string }, { moved: number; firstAt: number | null; lastAt: number | null }>(
+    firebase().functions,
+    "rescheduleQueue",
+  )(connectionId ? { connectionId } : {});
   return data;
 }
 

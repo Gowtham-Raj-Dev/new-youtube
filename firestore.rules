@@ -57,11 +57,14 @@ service cloud.firestore {
       return v is list && v.size() <= 30;
     }
 
+    function isOwnConnectionId(id) {
+      return signedIn() && id is string && id.matches('^' + request.auth.uid + '_[A-Za-z0-9_-]{1,64}$');
+    }
+
     // The channel a video, Short or banner was made on: one of the user's own
     // connections, whose ids are {uid}_{channelId}. Optional — see connectionId in models.ts.
     function isOwnChannel(d) {
-      return !('connectionId' in d)
-        || (d.connectionId is string && d.connectionId.matches('^' + request.auth.uid + '_[A-Za-z0-9_-]{1,64}$'));
+      return !('connectionId' in d) || isOwnConnectionId(d.connectionId);
     }
 
     // YouTube limits: title ≤ 100 chars, description ≤ 5000 bytes.
@@ -100,7 +103,11 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // ─── settings/{uid} ────────────────────────────────────────────────────────
+    // ─── settings/{uid} & settings/{connectionId} ───────────────────────────────
+
+    function isOwnSettingsId(settingsId) {
+      return isUser(settingsId) || isOwnConnectionId(settingsId);
+    }
 
     function isValidSettings(d, uid) {
       return d.keys().hasOnly(['userId', 'processing', 'publishing', 'automation', 'storage', 'notifications', 'updatedAt'])
@@ -153,9 +160,9 @@ service cloud.firestore {
         && d.notifications.failures is bool;
     }
 
-    match /settings/{uid} {
-      allow read: if isUser(uid);
-      allow create, update: if isUser(uid) && isValidSettings(incoming(), uid);
+    match /settings/{settingsId} {
+      allow read: if isOwnSettingsId(settingsId);
+      allow create, update: if isOwnSettingsId(settingsId) && isValidSettings(incoming(), request.auth.uid);
       allow delete: if false;
     }
 

@@ -84,6 +84,25 @@ export function useSettings(uid: string | undefined) {
   return useLiveDoc<SettingsDoc>(uid ? `settings:${uid}` : null, () => doc(firebase().db, COLLECTIONS.settings, uid!));
 }
 
+/**
+ * Per-channel settings (`settings/{connectionId}`) when a channel is active,
+ * falling back seamlessly to account defaults (`settings/{uid}`).
+ */
+export function useChannelSettings(uid: string | undefined, connectionId: string | undefined) {
+  const user = useSettings(uid);
+  const channel = useLiveDoc<SettingsDoc>(
+    uid && connectionId ? `settings:${connectionId}` : null,
+    () => doc(firebase().db, COLLECTIONS.settings, connectionId!),
+  );
+  return {
+    data: channel.data ?? user.data,
+    userSettings: user.data,
+    channelSettings: channel.data,
+    loading: user.loading || (Boolean(uid && connectionId) && channel.loading),
+    error: channel.error ?? user.error,
+  };
+}
+
 export function useShorts(uid: string | undefined, count = 300) {
   return useLiveQuery<ShortDoc>(uid ? `shorts:${uid}:${count}` : null, () =>
     query(collection(firebase().db, COLLECTIONS.shorts), where("userId", "==", uid), orderBy("createdAt", "desc"), limit(count)),
@@ -93,11 +112,25 @@ export function useShorts(uid: string | undefined, count = 300) {
 const QUEUE_HISTORY_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Everything in the upload queue: what's still to go out, plus the last week's results. Earliest first. */
-export function useSchedules(uid: string | undefined, count = 300) {
+export function useSchedules(uid: string | undefined, count = 1000) {
   return useLiveQuery<ScheduleDoc>(uid ? `schedules:${uid}:${count}` : null, () =>
     query(
       collection(firebase().db, COLLECTIONS.schedules),
       where("userId", "==", uid),
+      where("publishAt", ">=", new Date(Date.now() - QUEUE_HISTORY_MS)),
+      orderBy("publishAt", "asc"),
+      limit(count),
+    ),
+  );
+}
+
+/** Strictly one channel's upload queue and recent history, so another channel's backlog never crowds it. */
+export function useChannelSchedules(uid: string | undefined, connectionId: string | undefined, count = 1000) {
+  return useLiveQuery<ScheduleDoc>(uid && connectionId ? `schedules:${uid}:${connectionId}:${count}` : null, () =>
+    query(
+      collection(firebase().db, COLLECTIONS.schedules),
+      where("userId", "==", uid),
+      where("connectionId", "==", connectionId),
       where("publishAt", ">=", new Date(Date.now() - QUEUE_HISTORY_MS)),
       orderBy("publishAt", "asc"),
       limit(count),

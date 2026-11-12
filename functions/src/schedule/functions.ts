@@ -1,5 +1,5 @@
 import { HttpsError, onCall } from "firebase-functions/https";
-import { FieldValue, Timestamp, getFirestore } from "firebase-admin/firestore";
+import { FieldValue, Timestamp, getFirestore, type Firestore, type QueryDocumentSnapshot, type Transaction } from "firebase-admin/firestore";
 import { COLLECTIONS, DEFAULT_SETTINGS, hasAnySlot, nextSlots, slotRulesFrom, type SettingsDoc, type ShortDoc } from "@shortflow/shared";
 import { TOKEN_ENCRYPTION_KEY, YOUTUBE_CLIENT_SECRET } from "../config";
 import { requireUid } from "../lib/auth";
@@ -11,6 +11,16 @@ const MAX_PER_CALL = 50;
 const UPLOAD_NOW_BUDGET_MS = 8 * 60 * 1000;
 /** Never hand out a slot the publishing sweep may already be past. */
 const LEAD_MS = 2 * 60 * 1000;
+
+/** Reads per-channel settings (`settings/{connectionId}`), falling back to account defaults (`settings/{userId}`). */
+async function channelSettings(db: Firestore, userId: string, connectionId?: string): Promise<Pick<SettingsDoc, "publishing" | "automation">> {
+  if (connectionId) {
+    const channelSnap = await db.collection(COLLECTIONS.settings).doc(connectionId).get();
+    if (channelSnap.exists) return channelSnap.data() as SettingsDoc;
+  }
+  const userSnap = await db.collection(COLLECTIONS.settings).doc(userId).get();
+  return (userSnap.data() as SettingsDoc | undefined) ?? DEFAULT_SETTINGS;
+}
 
 /** The channel to publish to: the one asked for, or the user's only connected one. */
 async function pickConnection(userId: string, requested: unknown): Promise<string> {
@@ -46,7 +56,7 @@ export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string; 
 
   const db = getFirestore();
   const connectionId = await pickConnection(userId, request.data?.connectionId);
-  const settings = ((await db.collection(COLLECTIONS.settings).doc(userId).get()).data() as SettingsDoc | undefined) ?? DEFAULT_SETTINGS;
+  const settings = await channelSettings(db, userId, connectionId);
   const rules = slotRulesFrom(settings);
   if (!uploadNow && !hasAnySlot(rules)) throw new HttpsError("failed-precondition", "Pick at least one publishing day on the Schedule page first.");
 
@@ -55,14 +65,22 @@ export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string; 
     for (const snap of snaps) {
       const short = snap.data() as ShortDoc | undefined;
       if (!short || short.userId !== userId) throw new HttpsError("not-found", "One of those Shorts no longer exists.");
+      if (short.connectionId && short.connectionId !== connectionId) {
+        throw new HttpsError("failed-precondition", `“${short.title}” belongs to a different channel.`);
+      }
       if (short.status !== "ready" && short.status !== "failed") {
         throw new HttpsError("failed-precondition", `“${short.title}” is already queued or published.`);
       }
     }
 
     const now = Date.now();
-    const upcoming = await tx.get(db.collection(COLLECTIONS.schedules).where("userId", "==", userId).where("publishAt", ">=", Timestamp.fromMillis(now)));
-    const taken = upcoming.docs.filter((d) => !shortIds.includes(d.id)).map((d) => (d.get("publishAt") as Timestamp).toMillis());
+    // Query only this channel's upcoming queue so another channel's schedules are neither read nor locked.
+    const upcoming = await tx.get(
+      db.collection(COLLECTIONS.schedules).where("connectionId", "==", connectionId).where("publishAt", ">=", Timestamp.fromMillis(now)),
+    );
+    const taken = upcoming.docs
+      .filter((d) => !shortIds.includes(d.id))
+      .map((d) => (d.get("publishAt") as Timestamp).toMillis());
     // A millisecond apart so the sweep, which goes by publishAt, keeps the order given.
     const slots = uploadNow ? shortIds.map((_, i) => now + i) : nextSlots(rules, shortIds.length, now + LEAD_MS, taken);
     if (slots.length < shortIds.length) throw new HttpsError("failed-precondition", "Your schedule has no free slots. Check the Schedule page.");
@@ -86,7 +104,7 @@ export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string; 
         errorMessage: null,
         youtubeVideoId: null,
       });
-      tx.update(snap.ref, { status: "scheduled", publishAt, errorMessage: null });
+      tx.update(snap.ref, { status: "scheduled", publishAt, errorMessage: null, ...(snap.get("connectionId") ? {} : { connectionId }) });
     });
     return slots;
   });
@@ -110,33 +128,91 @@ export const queueShorts = onCall<{ shortIds?: string[]; connectionId?: string; 
   },
 );
 
-/**
- * Re-times everything still waiting in the queue to the user's current
- * schedule, keeping the order. Called after the schedule is saved, so a new
- * start time, gap or daily limit applies to Shorts that were queued under the old one.
- */
-export const rescheduleQueue = onCall(async (request) => {
-  const userId = requireUid(request.auth);
-  const db = getFirestore();
-  const settings = ((await db.collection(COLLECTIONS.settings).doc(userId).get()).data() as SettingsDoc | undefined) ?? DEFAULT_SETTINGS;
-  const rules = slotRulesFrom(settings);
+/** Applies `rules` independently to one channel's waiting schedules inside a transaction. */
+function rescheduleChannelDocs(
+  tx: Transaction,
+  db: Firestore,
+  channelDocs: QueryDocumentSnapshot[],
+  rules: ReturnType<typeof slotRulesFrom>,
+  now: number,
+): number[] {
+  const waiting = channelDocs.filter((d) => d.get("status") === "scheduled");
+  if (waiting.length === 0) return [];
   if (!hasAnySlot(rules)) throw new HttpsError("failed-precondition", "Pick at least one publishing day first.");
+  // Ones mid-upload or parked on a quota error keep their time and still count towards that channel's day.
+  const fixed = channelDocs.filter((d) => d.get("status") !== "scheduled").map((d) => (d.get("publishAt") as Timestamp).toMillis());
+  const slots = nextSlots(rules, waiting.length, now + LEAD_MS, fixed);
+  if (slots.length < waiting.length) throw new HttpsError("failed-precondition", "Your schedule has no free slots. Check the publishing days.");
+
+  const stamp = FieldValue.serverTimestamp();
+  waiting.forEach((doc, i) => {
+    const publishAt = Timestamp.fromMillis(slots[i]);
+    tx.update(doc.ref, { publishAt, timezone: rules.timezone, updatedAt: stamp });
+    tx.update(db.collection(COLLECTIONS.shorts).doc(doc.id), { publishAt });
+  });
+  return slots;
+}
+
+/**
+ * Re-times everything still waiting in a channel's queue (or every channel's queue
+ * independently when `connectionId` is omitted), keeping each channel's order.
+ */
+export const rescheduleQueue = onCall<{ connectionId?: string } | undefined>(async (request) => {
+  const userId = requireUid(request.auth);
+  const requestedConnectionId = typeof request.data?.connectionId === "string" && request.data.connectionId ? request.data.connectionId : undefined;
+  const db = getFirestore();
+
+  let preloadedRules: ReturnType<typeof slotRulesFrom> | null = null;
+  if (requestedConnectionId) {
+    const connSnap = await db.collection(COLLECTIONS.youtubeConnections).doc(requestedConnectionId).get();
+    if (!connSnap.exists || connSnap.get("userId") !== userId) {
+      throw new HttpsError("failed-precondition", "That YouTube channel isn't connected any more.");
+    }
+    preloadedRules = slotRulesFrom(await channelSettings(db, userId, requestedConnectionId));
+    if (!hasAnySlot(preloadedRules)) throw new HttpsError("failed-precondition", "Pick at least one publishing day first.");
+  }
 
   const moved = await db.runTransaction(async (tx) => {
-    const mine = await tx.get(db.collection(COLLECTIONS.schedules).where("userId", "==", userId).where("status", "in", ["scheduled", "uploading", "quota_exceeded"]).orderBy("publishAt"));
-    const waiting = mine.docs.filter((d) => d.get("status") === "scheduled");
     const now = Date.now();
-    // Ones mid-upload or parked on a quota error keep their time and still count towards their day.
-    const fixed = mine.docs.filter((d) => d.get("status") !== "scheduled").map((d) => (d.get("publishAt") as Timestamp).toMillis());
-    const slots = nextSlots(rules, waiting.length, now + LEAD_MS, fixed);
-    if (slots.length < waiting.length) throw new HttpsError("failed-precondition", "Your schedule has no free slots. Check the publishing days.");
+    if (requestedConnectionId && preloadedRules) {
+      const channelSnap = await tx.get(
+        db
+          .collection(COLLECTIONS.schedules)
+          .where("connectionId", "==", requestedConnectionId)
+          .where("status", "in", ["scheduled", "uploading", "quota_exceeded"])
+          .orderBy("publishAt"),
+      );
+      return rescheduleChannelDocs(tx, db, channelSnap.docs, preloadedRules, now);
+    }
 
-    waiting.forEach((doc, i) => {
-      const publishAt = Timestamp.fromMillis(slots[i]);
-      tx.update(doc.ref, { publishAt, timezone: rules.timezone, updatedAt: FieldValue.serverTimestamp() });
-      tx.update(db.collection(COLLECTIONS.shorts).doc(doc.id), { publishAt });
-    });
-    return slots;
+    const mine = await tx.get(
+      db.collection(COLLECTIONS.schedules).where("userId", "==", userId).where("status", "in", ["scheduled", "uploading", "quota_exceeded"]).orderBy("publishAt"),
+    );
+
+    const byConnection = new Map<string, QueryDocumentSnapshot[]>();
+    for (const doc of mine.docs) {
+      const connId = (doc.get("connectionId") as string | undefined) || "";
+      const list = byConnection.get(connId) ?? [];
+      list.push(doc);
+      byConnection.set(connId, list);
+    }
+
+    const connectionIds = [...byConnection.keys()].filter((connId) => byConnection.get(connId)?.some((d) => d.get("status") === "scheduled"));
+    if (connectionIds.length === 0) return [];
+
+    const settingsIds = [...new Set([userId, ...connectionIds.filter(Boolean)])];
+    const settingsSnaps = await tx.getAll(...settingsIds.map((id) => db.collection(COLLECTIONS.settings).doc(id)));
+    const settingsMap = new Map(settingsSnaps.map((snap) => [snap.id, snap.data() as SettingsDoc | undefined]));
+    const fallbackSettings = settingsMap.get(userId) ?? DEFAULT_SETTINGS;
+
+    const allSlots: number[] = [];
+    for (const connId of connectionIds) {
+      const rules = slotRulesFrom(settingsMap.get(connId) ?? fallbackSettings);
+      allSlots.push(...rescheduleChannelDocs(tx, db, byConnection.get(connId) ?? [], rules, now));
+    }
+
+    allSlots.sort((a, b) => a - b);
+    return allSlots;
   });
 
   return { moved: moved.length, firstAt: moved[0] ?? null, lastAt: moved[moved.length - 1] ?? null };

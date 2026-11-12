@@ -4,7 +4,7 @@ import { ArrowRight, CalendarClock, Film, Upload } from "lucide-react";
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useChannelCounts, useChannelUploads, useChannelVideos, useChannels } from "@/components/providers/channel-provider";
-import { useSchedules, useSettings, useShorts, useUserDoc } from "@/lib/firebase/hooks";
+import { useChannelSettings, useSchedules, useShorts, useUserDoc } from "@/lib/firebase/hooks";
 import { VideoCard, VideoCardSkeleton } from "@/components/video/video-card";
 import { formatInZone, greetingFor, toDate } from "@/lib/time";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -85,12 +85,12 @@ function RecentVideos({ uid, timezone }: { uid: string; timezone: string }) {
 
 function UpcomingSchedule({ uid }: { uid: string }) {
   const { data: schedules, loading } = useSchedules(uid);
-  const { active, multi } = useChannels();
+  const { active, hrefFor } = useChannels();
   const { data: shorts } = useShorts(uid);
-  const { data: settings } = useSettings(uid);
+  const { data: settings } = useChannelSettings(uid, active?.id);
   const timezone = (settings ?? DEFAULT_SETTINGS).publishing.timezone;
-  // With several channels, only what is going out on the one picked in the top bar.
-  const waiting = schedules.filter((s) => (!multi || s.connectionId === active?.id) && (s.status === "scheduled" || s.status === "uploading" || s.status === "quota_exceeded"));
+  // Each connected channel keeps its own independent schedule & queue.
+  const waiting = schedules.filter((s) => (!active || s.connectionId === active.id) && (s.status === "scheduled" || s.status === "uploading" || s.status === "quota_exceeded"));
   const next = waiting.slice(0, 4);
 
   return (
@@ -100,7 +100,7 @@ function UpcomingSchedule({ uid }: { uid: string }) {
         description="The next Shorts going live on YouTube."
         action={
           waiting.length > 0 && (
-            <ButtonLink href="/queue" variant="ghost" size="sm">
+            <ButtonLink href={hrefFor("/queue")} variant="ghost" size="sm">
               View all {waiting.length}
               <ArrowRight className="size-3.5" />
             </ButtonLink>

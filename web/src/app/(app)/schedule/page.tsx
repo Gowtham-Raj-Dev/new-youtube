@@ -14,7 +14,9 @@ import {
   type Weekday,
 } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useSchedules, useSettings, type WithId } from "@/lib/firebase/hooks";
+import { useChannels } from "@/components/providers/channel-provider";
+import { ChannelTabs } from "@/components/layout/channel-tabs";
+import { useChannelSchedules, useChannelSettings, useSchedules, type WithId } from "@/lib/firebase/hooks";
 import { WEEKDAY_LABELS, rescheduleQueue, saveSettings, type EditableSettings } from "@/lib/schedule";
 import { formatInZone, timezoneOptions } from "@/lib/time";
 import { Alert } from "@/components/ui/alert";
@@ -73,7 +75,25 @@ function DayRow({ day, times, onChange, onCopyToAll }: { day: Weekday; times: st
   );
 }
 
-function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: EditableSettings; schedules: WithId<ScheduleDoc>[] }) {
+function ScheduleForm({
+  uid,
+  connectionId,
+  channelTitle,
+  multi,
+  hasOwnSettings,
+  settings,
+  schedules,
+  hrefFor,
+}: {
+  uid: string;
+  connectionId: string | undefined;
+  channelTitle: string | undefined;
+  multi: boolean;
+  hasOwnSettings: boolean;
+  settings: EditableSettings;
+  schedules: WithId<ScheduleDoc>[];
+  hrefFor: (href: string) => string;
+}) {
   const [timezone, setTimezone] = useState(settings.publishing.timezone);
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<{ tone: "success" | "error"; message: string } | null>(null);
@@ -86,6 +106,7 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
   const valid = hasAnySlot(rules);
   // A schedule still stored as the old pattern counts as unsaved: saving writes it as per-day times.
   const dirty = !settings.automation.daySlots || JSON.stringify(dayTimes) !== JSON.stringify(saved) || timezone !== settings.publishing.timezone;
+  const needsMaterialize = Boolean(connectionId && !hasOwnSettings);
 
   const waiting = schedules.filter((s) => s.status === "scheduled" || s.status === "quota_exceeded").length;
   // The times videos go out under the schedule on screen, counted from now: first the ones already
@@ -101,26 +122,38 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
   async function save(e: FormEvent) {
     e.preventDefault();
     // With Shorts waiting, saving is allowed even unchanged: it re-times the queue to this schedule.
-    if (!valid || (!dirty && waiting === 0)) return;
+    if (!valid || (!dirty && !needsMaterialize && waiting === 0)) return;
     setBusy(true);
     setBanner(null);
     try {
-      if (dirty) {
-        await saveSettings(uid, {
-          ...settings,
-          publishing: { ...settings.publishing, timezone },
-          automation: { ...settings.automation, daySlots: dayTimes },
-        });
+      if (dirty || needsMaterialize) {
+        await saveSettings(
+          connectionId ?? uid,
+          {
+            ...settings,
+            publishing: { ...settings.publishing, timezone },
+            automation: { ...settings.automation, daySlots: dayTimes },
+          },
+          uid,
+        );
       }
-      // The Shorts already waiting move to the new times too, in the same order.
-      const { moved, firstAt, lastAt } = await rescheduleQueue();
+      // Re-times only this channel's waiting Shorts onto its saved schedule.
+      const { moved, firstAt, lastAt } = await rescheduleQueue(connectionId);
+      if (multi && connectionId && moved > waiting) {
+        setBanner({
+          tone: "error",
+          message: `Schedule saved for ${channelTitle ?? "this channel"}, but the live server rescheduled ${moved} Shorts across channels instead of ${waiting}. Deploy the updated Cloud Functions before re-timing.`,
+        });
+        setBusy(false);
+        return;
+      }
       const when = (ms: number) => formatInZone(new Date(ms), timezone, { dateStyle: undefined, timeStyle: undefined, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
       setBanner({
         tone: "success",
         message:
           moved > 0 && firstAt && lastAt
-            ? `Schedule saved. The ${moved} Short${moved === 1 ? "" : "s"} in the queue ${moved === 1 ? "was" : "were"} moved to it: first ${when(firstAt)}, last ${when(lastAt)}.`
-            : "Schedule saved. Shorts you queue from now on use these times.",
+            ? `Schedule saved for ${channelTitle ?? "this channel"}. Its ${moved} queued Short${moved === 1 ? "" : "s"} now start${moved === 1 ? "s" : ""} ${when(firstAt)} (last ${when(lastAt)}).`
+            : `Schedule saved for ${channelTitle ?? "this channel"}. Shorts you queue from now on use these times.`,
       });
     } catch {
       setBanner({ tone: "error", message: "Couldn't save your schedule. Check your connection and try again." });
@@ -131,7 +164,10 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
       <Card>
-        <CardHeader title="When Shorts go out" description="Each Short you submit to the queue takes the next free slot." />
+        <CardHeader
+          title={multi && channelTitle ? `When Shorts go out — ${channelTitle}` : "When Shorts go out"}
+          description="Each Short you submit to this channel's queue takes its next free slot."
+        />
         <form onSubmit={save} className="space-y-5 p-5">
           {banner && (
             <Alert tone={banner.tone} onDismiss={() => setBanner(null)}>
@@ -169,8 +205,8 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
             <Button type="button" variant="ghost" icon={<RotateCcw className="size-4" />} disabled={(JSON.stringify(dayTimes) === JSON.stringify(saved) && timezone === settings.publishing.timezone) || busy} onClick={reset}>
               Reset
             </Button>
-            <Button type="submit" loading={busy} disabled={!valid || (!dirty && waiting === 0)}>
-              {dirty || waiting === 0 ? "Save schedule" : "Apply to queue"}
+            <Button type="submit" loading={busy} disabled={!valid || (!dirty && !needsMaterialize && waiting === 0)}>
+              {dirty || needsMaterialize || waiting === 0 ? "Save schedule" : "Apply to queue"}
             </Button>
           </div>
         </form>
@@ -224,7 +260,7 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
             <p className="text-[13.5px] font-medium">{waiting === 0 ? "Nothing in the queue" : `${waiting} Short${waiting === 1 ? "" : "s"} in the queue`}</p>
             <p className="mt-0.5 text-[12.5px] text-muted">Submit Shorts from the Shorts page.</p>
           </div>
-          <ButtonLink href={waiting === 0 ? "/shorts" : "/queue"} variant="secondary" size="sm" icon={<Layers className="size-3.5" />}>
+          <ButtonLink href={hrefFor(waiting === 0 ? "/shorts" : "/queue")} variant="secondary" size="sm" icon={<Layers className="size-3.5" />}>
             {waiting === 0 ? "Shorts" : "Queue"}
           </ButtonLink>
         </Card>
@@ -235,15 +271,23 @@ function ScheduleForm({ uid, settings, schedules }: { uid: string; settings: Edi
 
 export default function PublishingSchedulePage() {
   const { user } = useAuth();
-  const { data: settings, loading, error } = useSettings(user?.uid);
-  const { data: schedules } = useSchedules(user?.uid);
+  const { active, multi, hrefFor } = useChannels();
+  const { data: settings, channelSettings, loading, error } = useChannelSettings(user?.uid, active?.id);
+  const { data: allSchedules } = useSchedules(user?.uid);
+  const { data: channelSchedules } = useChannelSchedules(user?.uid, active?.id);
+  const schedules = active ? channelSchedules : allSchedules;
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Publishing schedule</h2>
-        <p className="mt-1 text-sm text-muted">Set the times your Shorts go out. The queue fills these slots in order, and uploads happen in the cloud — your PC can be off.</p>
+        <h2 className="text-2xl font-semibold tracking-tight">Publishing schedule{multi && active ? ` · ${active.channelTitle}` : ""}</h2>
+        <p className="mt-1 text-sm text-muted">Set the times your Shorts go out for this channel. Each channel runs on its own schedule and uploads independently in the cloud.</p>
       </div>
+
+      <ChannelTabs
+        badgeFor={(id) => allSchedules.filter((s) => s.connectionId === id && (s.status === "scheduled" || s.status === "quota_exceeded")).length || undefined}
+        caption="Select a channel to configure its own schedule"
+      />
 
       {error && <Alert tone="error">We couldn&apos;t load your schedule. Check your connection and refresh the page.</Alert>}
 
@@ -255,7 +299,17 @@ export default function PublishingSchedulePage() {
           <Skeleton className="h-9 w-2/3" />
         </Card>
       ) : (
-        <ScheduleForm uid={user.uid} settings={settings ?? DEFAULT_SETTINGS} schedules={schedules} />
+        <ScheduleForm
+          key={active?.id ?? "default"}
+          uid={user.uid}
+          connectionId={active?.id}
+          channelTitle={active?.channelTitle}
+          multi={multi}
+          hasOwnSettings={Boolean(channelSettings)}
+          settings={settings ?? DEFAULT_SETTINGS}
+          schedules={schedules}
+          hrefFor={hrefFor}
+        />
       )}
     </div>
   );

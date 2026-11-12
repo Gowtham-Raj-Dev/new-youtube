@@ -6,7 +6,7 @@ import { Film, Sparkles } from "lucide-react";
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE, type VideoDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useChannelBanners, useChannelUploads, useChannelVideos, useChannelWork, useChannels } from "@/components/providers/channel-provider";
-import { useSettings, useShorts, useUserDoc, type WithId } from "@/lib/firebase/hooks";
+import { useChannelSettings, useShorts, useUserDoc, type WithId } from "@/lib/firebase/hooks";
 import type { RejectedFile } from "@/lib/uploads/upload-provider";
 import { matchesFilter, type VideoFilter } from "@/lib/videos";
 import { Alert } from "@/components/ui/alert";
@@ -32,7 +32,7 @@ export default function VideosPage() {
   const { active } = useChannels();
   const { data: storedVideos, loading, error } = useChannelVideos(user?.uid);
   const { data: shorts } = useShorts(user?.uid);
-  const { data: settings } = useSettings(user?.uid);
+  const { data: settings } = useChannelSettings(user?.uid, active?.id);
   const { data: banners } = useChannelBanners(user?.uid);
   const { splits, dismissSplit } = useChannelWork();
   const finished = [...splits.values()].filter((job) => job.status !== "working");

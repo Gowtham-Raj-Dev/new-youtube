@@ -40,3 +40,8 @@ web/public/downloads/
 
 # Moolai Illa Machan videos and voice takes (local only)
 /Moolai Illa Machan/
+
+# Ulagam Ippo videos and voice takes (local only)
+/Ulagam Ippo/**/*.mp4
+/Ulagam Ippo/**/*.pcm
+/Ulagam Ippo/**/*.wav
