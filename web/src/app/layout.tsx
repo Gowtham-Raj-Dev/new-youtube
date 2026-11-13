@@ -32,8 +32,6 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col">
-        {/* CodeLove Analytics (admin.codelove.in) */}
-        <script defer src="https://admin.codelove.in/t.js" />
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
