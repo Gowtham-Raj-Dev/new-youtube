@@ -42,6 +42,7 @@ async function main() {
     } catch (error) {
       failed.push(episode.id);
       console.error(`${episode.id}: FAILED — ${String(error).split("\n")[0]}`);
+      if (process.env.MIM_DEBUG) console.error(error);
     }
   }
   if (failed.length) {
@@ -60,10 +61,20 @@ async function makeOne(i: number, { id, script, scene }: (typeof EPISODES)[numbe
     } else {
       const take = join(voiceDir, `${id}.pcm`);
       if (!existsSync(take)) {
-        const key = (await readFile(resolve(__dirname, "..", ".secret.local"), "utf8")).match(/^GEMINI_API_KEY=(.+)$/m)?.[1]?.trim();
-        if (!key) throw new Error("GEMINI_API_KEY is missing from functions/.secret.local");
+        // Every GEMINI_API_KEY* in turn: when one's daily quota is used up, the next one records.
+        const keys = [...(await readFile(resolve(__dirname, "..", ".secret.local"), "utf8")).matchAll(/^GEMINI_API_KEY\w*=(.+)$/gm)].map((m) => m[1].trim());
+        if (!keys.length) throw new Error("GEMINI_API_KEY is missing from functions/.secret.local");
+        let audio: Buffer | undefined;
+        for (const [k, key] of keys.entries()) {
+          try {
+            audio = await geminiSpeech(key, lines, plan.geminiVoices);
+            break;
+          } catch (error) {
+            if (!String(error).includes("429") || k === keys.length - 1) throw error;
+          }
+        }
         // Saved before anything else, so the take is never lost or paid for twice.
-        await writeFile(take, await geminiSpeech(key, lines, plan.geminiVoices));
+        await writeFile(take, audio!);
         console.log(`${id}: voice recorded → ${take}`);
       }
       // A take Gemini paused oddly in is cut by hand: voice/<id>.splits.json, [start, end] seconds per line.

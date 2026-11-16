@@ -104,7 +104,8 @@ async function main() {
     const shortRef = db.collection(COLLECTIONS.shorts).doc(id);
     const short = await shortRef.get();
     const when = new Date(slots[i] + IST_OFFSET_MS).toISOString().replace("T", " ").slice(0, 16);
-    if (!short.exists || short.get("status") !== "ready") {
+    // "failed" can be booked again, as the app's queue allows (e.g. after an interrupted upload).
+    if (!short.exists || (short.get("status") !== "ready" && short.get("status") !== "failed")) {
       console.log(`${id}: ${short.exists ? short.get("status") : "missing"}, skipped`);
       continue;
     }

@@ -415,21 +415,27 @@ export async function run(args: string[], stdin?: (write: (frame: Buffer) => Pro
   const exited = once(ffmpeg, "close") as Promise<[number | null, NodeJS.Signals | null]>;
   if (stdin && ffmpeg.stdin) {
     const pipe = ffmpeg.stdin;
-    // If ffmpeg dies mid-way, writing more fails; the exit code below says why.
-    pipe.on("error", () => {});
+    // Only with `-t` may ffmpeg stop reading before every frame is in. Without it a pipe that breaks
+    // mid-way (Windows: "write UNKNOWN") makes ffmpeg see EOF and exit 0 with a short file —
+    // 06 Kumari Kandam lost 31 s of frames that way (2026-11-14) — so that must fail and be redone.
+    const limited = args.includes("-t");
+    let broken: Error | undefined;
+    pipe.on("error", (error) => (broken = error));
     try {
       await stdin(async (frame) => {
-        if (pipe.destroyed || pipe.writableEnded) return;
+        if (pipe.destroyed || pipe.writableEnded) {
+          if (limited) return;
+          throw broken ?? new Error("ffmpeg stopped reading its input early");
+        }
         if (!pipe.write(frame)) await once(pipe, "drain");
       });
     } catch (error) {
-      // ffmpeg closing its input early (e.g. once `-t` is reached) isn't a failure; its exit code below says.
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EPIPE" && code !== "EOF" && code !== "ERR_STREAM_DESTROYED") {
-        pipe.end();
-        await exited;
-        throw error;
-      }
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      pipe.end();
+      const [exitCode, signal] = await exited;
+      if (exitCode !== 0) throw new Error(`ffmpeg ${signal ?? `exited ${exitCode}`} (${String(error)}): ${stderr.slice(-800)}`);
+      // ffmpeg closing its input once `-t` is reached isn't a failure (on Windows it can show up as "write UNKNOWN").
+      if (!limited || !["EPIPE", "EOF", "ERR_STREAM_DESTROYED", "UNKNOWN"].includes(code)) throw error;
     } finally {
       pipe.end();
     }

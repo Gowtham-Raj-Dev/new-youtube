@@ -35,8 +35,10 @@ async function gcp(token: string, url: string) {
 async function main() {
   const args = process.argv.slice(2);
   const go = args.includes("--go");
-  const [connectionId, folderArg, day, time] = args.filter((a) => !a.startsWith("--"));
-  if (!connectionId || !folderArg || !day || !time) throw new Error("Usage: ex-to-youtube <connection id> <folder no.> <YYYY-MM-DD> <HH:mm> [--go]");
+  // --unlisted: up now as Unlisted, no publish time (the user's ask for video 05, 2026-11-13).
+  const unlisted = args.includes("--unlisted");
+  const [connectionId, folderArg, day = "", time = ""] = args.filter((a) => !a.startsWith("--"));
+  if (!connectionId || !folderArg || (!unlisted && (!day || !time))) throw new Error("Usage: ex-to-youtube <connection id> <folder no.> (<YYYY-MM-DD> <HH:mm> | --unlisted) [--go]");
 
   const name = readdirSync(VIDEOS).find((f) => f === folderArg || f.startsWith(`${folderArg} `));
   if (!name) throw new Error(`No video folder ${folderArg} in ${VIDEOS}`);
@@ -57,15 +59,15 @@ async function main() {
   const hashtags = (title + " " + description).match(/#[^\s#]+/g) ?? [];
   const [y, m, d] = day.split("-").map(Number);
   const [hh, mm] = time.split(":").map(Number);
-  const publishAt = Date.UTC(y, m - 1, d, hh, mm) - 5.5 * 3600 * 1000;
-  if (!thumbOnly && publishAt < Date.now() + 15 * 60 * 1000) throw new Error("That time is too soon or already past.");
+  const publishAt = unlisted ? 0 : Date.UTC(y, m - 1, d, hh, mm) - 5.5 * 3600 * 1000;
+  if (!thumbOnly && !unlisted && publishAt < Date.now() + 15 * 60 * 1000) throw new Error("That time is too soon or already past.");
   const thumb = join(folder, "thumbnail.jpg");
   if (!existsSync(thumb) || statSync(thumb).size > 2 * 1024 * 1024) throw new Error("thumbnail.jpg missing or over 2 MB.");
   const probe = spawnSync(ffmpegPath as unknown as string, ["-hide_banner", "-i", join(folder, mp4)], { encoding: "utf8" }).stderr;
   const found = /Duration: (\d+):(\d+):([\d.]+)/.exec(probe);
   const durationSec = found ? Number(found[1]) * 3600 + Number(found[2]) * 60 + Number(found[3]) : 0;
   const size = statSync(join(folder, mp4)).size;
-  console.log(`${mp4} (${(size / 1e6).toFixed(0)} MB, ${durationSec.toFixed(0)} s) · "${title}" (${title.length}/100) · description ${description.length}/5000 · ${tags.length} tags · ${hashtags.length} hashtags · public at ${day} ${time} IST`);
+  console.log(`${mp4} (${(size / 1e6).toFixed(0)} MB, ${durationSec.toFixed(0)} s) · "${title}" (${title.length}/100) · description ${description.length}/5000 · ${tags.length} tags · ${hashtags.length} hashtags · ${unlisted ? "UNLISTED now" : `public at ${day} ${time} IST`}`);
   if (title.length > 100 || description.length > 5000 || hashtags.length > 15) throw new Error("Metadata over YouTube's limits.");
 
   // Google access as the Firebase CLI user, for Firestore, Secret Manager and the functions' settings.
@@ -126,7 +128,9 @@ async function main() {
     headers: { Authorization: `Bearer ${yt}`, "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": "video/mp4", "X-Upload-Content-Length": String(size) },
     body: JSON.stringify({
       snippet: { title, description, tags, categoryId: "27", defaultLanguage: "ta", defaultAudioLanguage: "ta" },
-      status: { privacyStatus: "private", publishAt: new Date(publishAt).toISOString(), selfDeclaredMadeForKids: false, embeddable: true },
+      status: unlisted
+        ? { privacyStatus: "unlisted", selfDeclaredMadeForKids: false, embeddable: true }
+        : { privacyStatus: "private", publishAt: new Date(publishAt).toISOString(), selfDeclaredMadeForKids: false, embeddable: true },
     }),
   });
   if (!start.ok) throw new Error(`Upload start: ${start.status} ${(await start.text()).slice(0, 300)}`);
@@ -181,7 +185,7 @@ async function main() {
     }
   }
   closeSync(fd);
-  writeFileSync(doneFile, JSON.stringify({ videoId, url: `https://youtu.be/${videoId}`, publishAt: new Date(publishAt).toISOString(), uploadedAt: new Date().toISOString() }, null, 2));
+  writeFileSync(doneFile, JSON.stringify({ videoId, url: `https://youtu.be/${videoId}`, ...(unlisted ? { privacy: "unlisted" } : { publishAt: new Date(publishAt).toISOString() }), uploadedAt: new Date().toISOString() }, null, 2));
   console.log(`uploaded → https://youtu.be/${videoId}`);
 
   const t = await fetch(`https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${videoId}`, {
@@ -190,7 +194,7 @@ async function main() {
     body: new Uint8Array(readFileSync(thumb)),
   });
   console.log(t.ok ? "thumbnail set" : `thumbnail FAILED: ${t.status} ${(await t.text()).slice(0, 300)}`);
-  console.log(`scheduled: Public at ${day} ${time} IST`);
+  console.log(unlisted ? "Unlisted — only people with the link can see it" : `scheduled: Public at ${day} ${time} IST`);
 }
 
 void main().catch((error) => {

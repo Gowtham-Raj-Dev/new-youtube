@@ -1,11 +1,13 @@
 /** Every Ulagam Ippo video, in order; the ex-* scripts pick one with `--v=<number>`. */
 import type { ExVideo } from "./explainer";
 import { AI_JOBS } from "./ai-jobs";
+import { CHENNAI_FLOOD } from "./chennai-flood";
 import { CHOLA_NAVY } from "./chola-navy";
+import { KUMARI_KANDAM } from "./kumari-kandam";
 import { SAD_ANIMALS } from "./sad-animals";
 import { TN_HISTORY } from "./tn-history";
 
-export const VIDEOS: ExVideo[] = [TN_HISTORY, AI_JOBS, CHOLA_NAVY, SAD_ANIMALS];
+export const VIDEOS: ExVideo[] = [TN_HISTORY, AI_JOBS, CHOLA_NAVY, SAD_ANIMALS, CHENNAI_FLOOD, KUMARI_KANDAM];
 
 /** `--v=01` picks video 01; without it, the newest. */
 export function pickVideo(args = process.argv.slice(2)): ExVideo {

@@ -75,6 +75,12 @@ npm run ex-to-app -- <connection id> 01 2026-11-01 18:00 --go
 ```
 Video + thumbnail Storage-ku upload aagum, booked time-la app sweep straight-aa Public-la podum. Category: Education (27).
 
+**Shorts-um app queue vazhiyaa thaan** (user, 2026-11-14: "youtube layea pota venam, you for me la queue la set pannu") — `ex-shorts-to-youtube` (direct) vendaam:
+```
+npm run ex-to-app -- <connection id> 06 2026-11-18 12:00 --short=2 --go   # oru Short, oru slot
+```
+Ovvoru Short-kkum `Shorts/<NN> <name>.mp4` + `.txt` + `.jpg` (thumbnail = title therira oru frame) venum. `ex-to-app` `--full` link podaadhu — description-la "👉 முழு வீடியோ…" keezha `▶ https://youtu.be/<id>` line-ah .txt-laye ezhudhanum.
+
 **Daily time: 6:00 PM IST** (Tamil audience evening peak; weekend-um adhe). Ore time daily = subscribers-ku pazhakkam.
 
 **Metadata rules:** title ≤100 (hook first: number/shock + "?!" + topic + English keyword), description first 2 lines = hook (search-la theriyum), chapters, questions list, CTA, English keyword paragraph, image credits (CC BY-SA kandippaa), hashtags sariyaa 15 (first 3 title mela varum). Tags ≤500 chars, Tamil + English mix.
@@ -92,6 +98,12 @@ Video + thumbnail Storage-ku upload aagum, booked time-la app sweep straight-aa 
 
 | 04 | Top 3 Soga Vilangugal — "Top 3 சோகமான விலங்கு கதைகள்" (#3 ஆங்லர் மீன், #2 தனியா போன பென்குயின், #1 ஓர்கா அம்மா Tahlequah 2018) | **Thani Short** (`tall: true`, 1080×1920, 41 s), `countdown: true` (gold 3·2·1 cards), `chapterGap: 1.1`. User anuppuna viral "top 3" video maadhiri (2026-11-09). k4 start-la 15 s extra speech cut (`k4.splits.json`) — transcribe confirm pannala (Gemini 503). Script: `sad-animals.ts`. |
 
+| 05 | Chennai Vellam — "சென்னை ஏன் ஒவ்வொரு வருஷமும் மூழ்குது?" (5 காரணங்கள்: தட்டையான ஊர், காணாமப் போன ஏரிகள் / T. Nagar Long Tank, பள்ளிக்கரணை, வடிகால், பருவமழை 2015; twist 2019 வறட்சி) | **Hook first** (subscribe ask line 4-la, user channel review 2026-11-13). Story look, 8 takes, 3:51. **k8 start-la Gemini 15 s sondha kaakkaa-vadai kadhai sonnuchu** → cut; k6 lines 28–29 repeat → cut (`k6/k8.splits.json`). Script: `chennai-flood.ts`. |
+
+| 06 | Kumari Kandam — "குமரிக் கண்டம்: உண்மையா? கட்டுக்கதையா?" (Iraiyanar Akapporul urai: 3 sangams, Then Madurai/Kapatapuram; Silappathikaram Pahruli; Kanda Puranam; Sclater 1864 Lemuria; plate tectonics; ice age −120 m, Palk Strait ~7,000 yrs; Poompuhar, Dhanushkodi 1964, Saluvankuppam 2004 tsunami) | Hook first, story look, 8 takes, ~4:50. **k2 (7.7–13.6 s) + k6 (0–15 s) Gemini English style note-a satthamaa padichadhu** → cut; k3 line 13/14 cut thappu → fix (`k2/k3/k6.splits.json`). k8 clean (auto split). 4:35, 1440p. **YouTube Unlisted 2026-11-14: https://youtu.be/BzE3eZPsTb4** (`youtube.json`). Script: `kumari-kandam.ts`. **6 Shorts** rendered + .txt + .jpg (`Shorts/`): part 1 direct YouTube-la scheduled 17 Nov 7 PM (https://youtube.com/shorts/1JPNIaxd-9E); 2–6 **app queue-la** booked (`ui_…_long-06-s2…s6`): 18 Nov 12 PM, 18 Nov 7 PM, 19 Nov 12 PM, 19 Nov 7 PM, 20 Nov 12 PM. |
+
 **Thani Short-a pudhu video** (`tall: true`): `npm run ex-video` 1080×1920 render pannum, `--sheet=12` portrait sheet. `countdown: true` = chapter cards "நம்பர் 3/2/1" (kadaisi chapter = 1). Script ~450 Tamil letters ≈ 40 s (0.065 s/letter after 1.12×).
 
-Slow uplink: 1440p (430 MB) upload stuck aachu → 1080p `(upload).mp4` copy pannittu upload (ex-to-app adha mudhalla edukkum).
+Slow uplink: 1440p (430 MB) upload stuck aachu → 1080p `(upload).mp4` copy pannittu upload (ex-to-app adha mudhalla edukkum). 05/06 1440p direct-aa `ex-to-youtube --unlisted`-la poachu (~250 MB, 2 min).
+
+**Render aanadhum video vs audio length check pannanum** (ffprobe `stream=duration`, rendum ore maadhiri irukkanum). 06 mudhal render-la RAM kammi-aa irundhappo pipe "write UNKNOWN" aagi parts silent-aa short aachu → video 243.7 s / audio 275.2 s, voice-um picture-um sync illa. `render.ts` `run()` fix (2026-11-14): `-t` illaadha ffmpeg-ku pipe break = failure → part thirumba render aagum ("part N failed (write UNKNOWN), making it again" log-la varum, adhu sari thaan).
