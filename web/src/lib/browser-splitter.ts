@@ -4,12 +4,12 @@ import {
   BANNER_POSITIONS,
   COLLECTIONS,
   bannerHeight,
+  directUploadVideoId,
   newRunId,
   planSegments,
   reactionHeight,
   shortFileName,
   shortIdFor,
-  shortTitle,
   storagePaths,
   type BannerDoc,
   type BannerPosition,
@@ -20,7 +20,9 @@ import {
 } from "@shortflow/shared";
 import { BrowserRenderError, loadBitmap, renderInBrowser, type BrowserRenderJob, type BrowserRenderResult } from "./browser-render";
 import { firebase } from "./firebase/client";
-import type { SplitProgress } from "./local-splitter";
+import { metadataFor, type SplitLook, type SplitProgress } from "./local-splitter";
+import type { LocalVideo } from "./local-videos";
+import { changesPerPart, renderTextLayer } from "./text-boxes";
 
 /**
  * The same jobs the PC helper does — banners on a ready-made Short, and cutting
@@ -63,7 +65,7 @@ export function wrapInBrowser(
  * by piece, never downloaded whole. Returns how many Shorts were made.
  */
 export async function splitInBrowser(
-  video: VideoDoc & { id: string },
+  video: VideoDoc & { id: string; local?: LocalVideo },
   shortDuration: number,
   settings: Pick<SettingsDoc, "processing" | "publishing">,
   onProgress: (progress: SplitProgress) => void,
@@ -71,21 +73,30 @@ export async function splitInBrowser(
   label: { template: string; x: number; y: number } | null,
   tail: TailMode,
   reaction: ChosenReaction,
+  look: SplitLook = { framing: null, frame: null },
 ): Promise<number> {
   const { db, storage } = firebase();
   const { cropMode, outputQuality } = settings.processing;
   const segments = planSegments(video.durationSec ?? 0, shortDuration, tail);
   if (segments.length === 0) throw new BrowserRenderError("This video's length isn't known yet, so it can't be cut in the browser. Refresh the page and try again.");
 
-  const source = await getDownloadURL(storageRef(storage, video.storagePath));
+  // A video kept on this PC is read straight from here; nothing is uploaded but the finished Shorts.
+  const source = video.local ? video.local.file : await getDownloadURL(storageRef(storage, video.storagePath));
+  const shortsOf = video.local ? directUploadVideoId(video.userId) : video.id;
+  const crop = look.frame?.crop;
+  const picture = crop && look.frame ? { x: crop.x / look.frame.width, y: crop.y / look.frame.height, width: crop.width / look.frame.width, height: crop.height / look.frame.height } : null;
   const banners = await bannerBitmaps(chosenBanners);
   const run = newRunId();
   const total = segments.length;
+
+  const boxes = look.text ?? [];
+  const sharedText = boxes.length > 0 && !changesPerPart(boxes) ? await renderTextLayer(boxes, { n: 1, total, title: look.details?.name || video.title }) : null;
 
   for (const segment of segments) {
     const number = segment.index + 1;
     const stage = `Cutting Short ${number} / ${total} in your browser`;
     onProgress({ stage, percent: (segment.index / total) * 100 });
+    const overlay = sharedText ?? (boxes.length > 0 ? await renderTextLayer(boxes, { n: number, total, title: look.details?.name || video.title }) : null);
 
     const rendered = await renderInBrowser(
       {
@@ -96,13 +107,18 @@ export async function splitInBrowser(
         banners,
         reaction: reactionJob(reaction),
         label: label && { text: label.template.replaceAll("{n}", String(number)).replaceAll("{total}", String(total)), x: label.x, y: label.y },
+        framing: look.framing,
+        picture,
+        overlay,
+        pitch: look.pitch ?? 1,
       },
       // Rendering is nearly all of the work; the last sliver of each part is its upload.
       (share) => onProgress({ stage, percent: ((segment.index + share * 0.9) / total) * 100 }),
     );
 
-    const shortId = shortIdFor(video.id, run, segment.index);
-    const title = shortTitle(settings.publishing.titleTemplate, video.title, number, total);
+    const shortId = shortIdFor(shortsOf, run, segment.index);
+    const meta = metadataFor(look, settings, video.title, number, total);
+    const title = meta.title;
     const storagePath = storagePaths.shortVideo(video.userId, shortId);
     // `attachment` makes the browser save the file when its URL is opened; <video> still plays it.
     await uploadBytes(storageRef(storage, storagePath), rendered.video, {
@@ -120,7 +136,7 @@ export async function splitInBrowser(
     // Field set must match firestore.rules.
     await setDoc(doc(db, COLLECTIONS.shorts, shortId), {
       userId: video.userId,
-      videoId: video.id,
+      videoId: shortsOf,
       segmentIndex: segment.index,
       startSec: segment.startSec,
       endSec: segment.endSec,
@@ -131,9 +147,9 @@ export async function splitInBrowser(
       status: "ready",
       createdAt: serverTimestamp(),
       title,
-      description: settings.publishing.defaultDescription,
-      tags: settings.publishing.defaultTags,
-      privacy: settings.publishing.defaultPrivacy,
+      description: meta.description,
+      tags: meta.tags,
+      privacy: meta.privacy,
       categoryId: settings.publishing.categoryId,
       publishAt: null,
       youtubeVideoId: null,

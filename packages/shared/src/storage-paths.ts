@@ -44,6 +44,8 @@ export const storagePaths = {
   shortThumbnail: (uid: string, shortId: string) => `users/${uid}/shorts/${shortId}/thumbnail.jpg`,
   /** The Short as it was cut, kept once its voice has been changed so "Original" can bring it back. */
   shortOriginal: (uid: string, shortId: string) => `users/${uid}/shorts/${shortId}/original.mp4`,
+  /** The Short before it was first trimmed (with its current voice), so a trim can be widened again or undone. */
+  shortUntrimmed: (uid: string, shortId: string) => `users/${uid}/shorts/${shortId}/untrimmed.mp4`,
   banner: (uid: string, bannerId: string, extension: string) => `users/${uid}/banners/${bannerId}.${extension}`,
   autoShortsEndings: (uid: string, connectionId: string) => `users/${uid}/autoShorts/${connectionId}/`,
   autoShortsEnding: (uid: string, connectionId: string, id: string) => `users/${uid}/autoShorts/${connectionId}/ending-${id}.mp4`,

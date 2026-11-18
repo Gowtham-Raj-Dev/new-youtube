@@ -4,6 +4,7 @@ import { COLLECTIONS, VOICE_PITCH_MAX, VOICE_PITCH_MIN, storagePaths, type Short
 import type { WithId } from "./firebase/hooks";
 import { firebase } from "./firebase/client";
 import { HELPER, HelperOfflineError } from "./local-splitter";
+import { cutVideo } from "./trim";
 
 /** Its voice can be changed while its file is still in ShortFlow and it isn't going up right now. */
 export function canChangeVoice(short: ShortDoc): boolean {
@@ -35,16 +36,24 @@ export async function setShortVoice(short: WithId<ShortDoc>, voice: ShortVoice |
   const originalPath = storagePaths.shortOriginal(uid, short.id);
   const mp4 = { contentType: "video/mp4" };
 
+  // A trimmed Short keeps its whole self as untrimmed.mp4: the voice is changed on that, then the trim is cut again.
+  const untrimmedPath = storagePaths.shortUntrimmed(uid, short.id);
   if (!short.voice) {
     if (!voice) return; // already its own voice
-    // Keep the untouched Short before anything changes it.
-    const untouched = await pitched(await getDownloadURL(storageRef(storage, short.storagePath)), 1);
+    // Keep the untouched Short before anything changes it — the whole of it, if it was trimmed.
+    const untouched = await pitched(await getDownloadURL(storageRef(storage, short.trim ? untrimmedPath : short.storagePath)), 1);
     await uploadBytes(storageRef(storage, originalPath), untouched, mp4);
   }
   const originalUrl = await getDownloadURL(storageRef(storage, originalPath));
   const pitch = voice ? Math.min(VOICE_PITCH_MAX, Math.max(VOICE_PITCH_MIN, Math.round(voice.pitch * 100) / 100)) : 1;
   const video = await pitched(originalUrl, pitch);
-  await uploadBytes(storageRef(storage, short.storagePath), video, mp4);
+  if (short.trim) {
+    await uploadBytes(storageRef(storage, untrimmedPath), video, { ...mp4, cacheControl: "private, max-age=0, no-cache" });
+    const cut = await cutVideo(untrimmedPath, short.trim.startSec, short.trim.endSec);
+    await uploadBytes(storageRef(storage, short.storagePath), cut, { ...mp4, cacheControl: "private, max-age=0, no-cache" });
+  } else {
+    await uploadBytes(storageRef(storage, short.storagePath), video, mp4);
+  }
   await updateDoc(doc(db, COLLECTIONS.shorts, short.id), { voice: voice && pitch !== 1 ? { preset: voice.preset, pitch } : null });
 }
 

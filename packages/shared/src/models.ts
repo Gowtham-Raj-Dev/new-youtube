@@ -223,7 +223,22 @@ export interface ShortDoc {
    * Null or absent: the Short has its own voice.
    */
   voice?: ShortVoice | null;
+  /**
+   * Set once the Short has been trimmed: the part kept, in seconds of the
+   * untrimmed file (kept as untrimmed.mp4 — storagePaths.shortUntrimmed), and
+   * that file's length. Null or absent: it is whole.
+   */
+  trim?: ShortTrim | null;
 }
+
+export interface ShortTrim {
+  startSec: number;
+  endSec: number;
+  fullSec: number;
+}
+
+/** A trimmed Short is at least this long. */
+export const TRIM_MIN_SECONDS = 1;
 
 export interface ShortVoice {
   /** One of VOICE_PRESETS' ids, or "custom". */

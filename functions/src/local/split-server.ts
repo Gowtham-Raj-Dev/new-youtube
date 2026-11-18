@@ -4,7 +4,7 @@
 // uploads them itself. Never deployed — run with `npm run helper`.
 import { randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,18 +23,22 @@ import {
   REACTION_POSITIONS,
   SHORT_HEIGHT,
   TAIL_MODES,
+  VOICE_PITCH_MAX,
+  VOICE_PITCH_MIN,
   bannerHeight,
+  isFraming,
   planSegments,
   reactionHeight,
   type BannerPosition,
   type CropMode,
+  type Framing,
   type OutputQuality,
   type ReactionLook,
   type Segment,
   type TailMode,
 } from "@shortflow/shared";
 import { InstagramError, clearSession, hasSession, listProfile, loginState, pipeInstagramFile, readLink, rememberAdded, saveSession, startLogin } from "./instagram";
-import { changeVoicePitch, detectCrop, detectEncoder, grabFrameJpeg, probeMedia, renderShort, type BannerImage, type CropRect, type ReactionVideo } from "../lib/media";
+import { changeVoicePitch, detectCrop, detectEncoder, grabFrameJpeg, probeMedia, renderShort, trimVideo, type BannerImage, type CropRect, type ReactionVideo } from "../lib/media";
 
 /** SHORTFLOW_PORT is for trying a second helper beside a running one; the app always looks on 4777. */
 const PORT = Number(process.env.SHORTFLOW_PORT) || 4777;
@@ -203,6 +207,56 @@ async function saveReaction(req: IncomingMessage, res: ServerResponse) {
   send(res, 200, { id });
 }
 
+/**
+ * Long videos the browser hands over straight from the user's PC, by id — they
+ * never go to the cloud. Kept until the app lets go of them (or a day passes),
+ * so a video can be cut again without sending it twice.
+ */
+const sources = new Map<string, { path: string; size: number }>();
+const SOURCE_DIR = join(tmpdir(), "shortflow-helper", "sources");
+
+function discardSource(id: string) {
+  const held = sources.get(id);
+  if (!held) return;
+  sources.delete(id);
+  void rm(held.path, { force: true });
+}
+
+/** Keeps the long video in the request body; answers with the id to cut it by. `key` lets the same file be found again. */
+async function saveSource(req: IncomingMessage, res: ServerResponse, key: string | null) {
+  const id = key && /^[\w-]{6,80}$/.test(key) ? key : randomUUID();
+  const expected = Number(req.headers["content-length"] ?? 0);
+  const held = sources.get(id);
+  if (held && held.size === expected && (await stat(held.path).catch(() => null))?.size === expected) {
+    // Already here: drain the body and reuse it.
+    req.resume();
+    return send(res, 200, { id });
+  }
+  discardSource(id);
+  const path = join(SOURCE_DIR, id);
+  await mkdir(SOURCE_DIR, { recursive: true });
+  try {
+    await pipeline(req, createWriteStream(path));
+  } catch (error) {
+    void rm(path, { force: true });
+    throw error;
+  }
+  const size = (await stat(path)).size;
+  sources.set(id, { path, size });
+  setTimeout(() => discardSource(id), REACTION_KEEP_MS).unref();
+  console.log(`Holding a video from this PC (${Math.round(size / 1048576)} MB)`);
+  send(res, 200, { id });
+}
+
+/** The black-bar crop the app measured, or undefined to measure it here. Null means none. */
+function parseCrop(value: unknown): CropRect | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const c = value as CropRect;
+  const whole = (n: unknown) => typeof n === "number" && Number.isInteger(n) && n >= 0;
+  return typeof c === "object" && whole(c.width) && whole(c.height) && whole(c.x) && whole(c.y) && c.width >= 16 && c.height >= 16 ? c : undefined;
+}
+
 /** Puts banners and a reaction video on a ready-made Short already saved as the job's source. It is re-framed in the space left, not cut. */
 async function runWrap(job: Job, cropMode: CropMode, quality: OutputQuality, bannerRequests: Partial<Record<BannerPosition, BannerRequest>>, reactionRequest: ReactionRequest | null) {
   const source = join(job.dir, "source");
@@ -230,7 +284,8 @@ async function runWrap(job: Job, cropMode: CropMode, quality: OutputQuality, ban
 
 async function runJob(
   job: Job,
-  sourceUrl: string,
+  /** A Storage URL to fetch, or the path of a video held from this PC. */
+  from: { url: string } | { path: string },
   shortDuration: number,
   cropMode: CropMode,
   quality: OutputQuality,
@@ -238,12 +293,30 @@ async function runJob(
   labelRequest: LabelRequest | null,
   tail: TailMode,
   reactionRequest: ReactionRequest | null,
+  framing: Framing | null,
+  measuredCrop: CropRect | null | undefined,
+  /** Text layers drawn by the app, base64 PNG: one per part, or one for every part. */
+  overlays: string[],
+  pitch: number,
 ) {
+  // Written once; each Short takes its own (or the shared one).
+  const overlayPaths: string[] = [];
+  for (const [i, png] of overlays.entries()) {
+    const path = join(job.dir, `text-${i}.png`);
+    await writeFile(path, Buffer.from(png, "base64"));
+    overlayPaths.push(path);
+  }
+  const overlayFor = (index: number) => (overlayPaths.length === 0 ? null : (overlayPaths[index] ?? overlayPaths[overlayPaths.length - 1]));
   const labelFor = (part: number, total: number) =>
     labelRequest && { text: labelRequest.template.replaceAll("{n}", String(part)).replaceAll("{total}", String(total)), x: labelRequest.x, y: labelRequest.y };
-  job.stage = "Fetching the video";
-  const source = join(job.dir, "source");
-  await download(sourceUrl, source, "video");
+  let source: string;
+  if ("path" in from) {
+    source = from.path;
+  } else {
+    job.stage = "Fetching the video";
+    source = join(job.dir, "source");
+    await download(from.url, source, "video");
+  }
   const banners = await fetchBanners(job, bannerRequests);
   const reaction = prepareReaction(reactionRequest, banners);
 
@@ -251,7 +324,9 @@ async function runJob(
   if (!probe) throw new Error("This file isn't a playable video.");
   const segments = planSegments(probe.durationSec, shortDuration, tail);
   job.total = segments.length;
-  const crop = await detectCrop({ url: source }, probe);
+  // The app's own measurement wins, so the Shorts match its preview; it must lie inside the frame.
+  const fits = (c: CropRect) => c.x + c.width <= probe.width && c.y + c.height <= probe.height;
+  const crop = measuredCrop === undefined || (measuredCrop && !fits(measuredCrop)) ? await detectCrop({ url: source }, probe) : measuredCrop;
   if (crop) console.log(`Removing black bars: keeping ${crop.width}x${crop.height} of ${probe.width}x${probe.height}`);
 
   // Several Shorts are cut at once; each worker takes the next uncut segment.
@@ -265,7 +340,11 @@ async function runJob(
       const part = segment.index + 1;
       const durationSec = Math.round((segment.endSec - segment.startSec) * 100) / 100;
       const out = join(job.dir, `${part}.mp4`);
-      await renderShort({ url: source }, { startSec: segment.startSec, durationSec, cropMode, quality, banners, reaction, sourceHasAudio: probe.hasAudio, encoder, crop, label: labelFor(part, segments.length) }, out);
+      await renderShort(
+        { url: source },
+        { startSec: segment.startSec, durationSec, cropMode, quality, banners, reaction, sourceHasAudio: probe.hasAudio, encoder, crop, label: labelFor(part, segments.length), framing, sourceSize: probe, overlay: overlayFor(segment.index), pitch },
+        out,
+      );
 
       const frame = await grabFrameJpeg({ url: out }, Math.min(1, durationSec / 2)).catch(() => null);
       if (frame) await pipeline(Readable.from(frame), createWriteStream(join(job.dir, `${part}.jpg`)));
@@ -277,7 +356,8 @@ async function runJob(
   };
   await Promise.all(Array.from({ length: Math.min(PARALLEL, segments.length) }, worker));
   job.parts = parts;
-  await rm(source, { force: true });
+  // A video held from this PC stays for another cut until the app lets go of it.
+  if (!("path" in from)) await rm(source, { force: true });
   job.stage = "Done";
   job.status = "done";
 }
@@ -300,19 +380,44 @@ function send(res: ServerResponse, status: number, body: unknown) {
 }
 
 async function startSplit(req: IncomingMessage, res: ServerResponse) {
-  const { url, shortDuration, cropMode, quality, banners, label, tail = "own", reaction = null } = await readJson(req);
+  const { url, sourceId, shortDuration, cropMode, quality, banners, label, tail = "own", reaction = null, framing = null, crop: cropValue, overlays = [], pitch = 1 } = await readJson(req);
+  const validOverlays = Array.isArray(overlays) && overlays.length <= 1000 && overlays.every((o) => typeof o === "string" && o.length < 12_000_000 && /^[A-Za-z0-9+/=]+$/.test(o));
+  const validPitch = typeof pitch === "number" && pitch >= VOICE_PITCH_MIN && pitch <= VOICE_PITCH_MAX;
   const validLength = typeof shortDuration === "number" && Number.isInteger(shortDuration) && shortDuration >= MIN_SHORT_SECONDS && shortDuration <= MAX_SHORT_SECONDS;
   const bannerRequests = parseBanners(banners);
-  if (!isAllowedSource(url) || !validLength || !bannerRequests || (label != null && !isLabelRequest(label)) || (reaction !== null && !isReactionRequest(reaction)) || !TAIL_MODES.includes(tail as TailMode) || !CROP_MODES.includes(cropMode as CropMode) || !OUTPUT_QUALITIES.includes(quality as OutputQuality)) {
-    console.warn("Refused a split request:", { url: String(url).slice(0, 60), shortDuration, cropMode, quality });
+  const held = typeof sourceId === "string" ? sources.get(sourceId) : undefined;
+  if (typeof sourceId === "string" && !held) return send(res, 410, { error: "The video isn't held any more. Send it again." });
+  const crop = parseCrop(cropValue);
+  if (
+    (!held && !isAllowedSource(url)) || !validLength || !bannerRequests || (label != null && !isLabelRequest(label)) || (reaction !== null && !isReactionRequest(reaction)) ||
+    (framing !== null && !isFraming(framing)) || (cropValue != null && crop === undefined) || !validOverlays || !validPitch ||
+    !TAIL_MODES.includes(tail as TailMode) || !CROP_MODES.includes(cropMode as CropMode) || !OUTPUT_QUALITIES.includes(quality as OutputQuality)
+  ) {
+    console.warn("Refused a split request:", { url: String(url).slice(0, 60), shortDuration, cropMode, quality, framing });
     return send(res, 400, { error: "Bad request." });
   }
 
   const id = randomUUID();
   const dir = join(tmpdir(), "shortflow-helper", id);
   await mkdir(dir, { recursive: true });
-  console.log(`[${id}] cutting into ${shortDuration}s Shorts (${cropMode}, ${quality})`);
-  openJob(id, dir, (job) => runJob(job, url, shortDuration, cropMode as CropMode, quality as OutputQuality, bannerRequests, isLabelRequest(label) ? label : null, tail as TailMode, isReactionRequest(reaction) ? reaction : null));
+  console.log(`[${id}] cutting ${held ? "a video from this PC" : "a video"} into ${shortDuration}s Shorts (${cropMode}${isFraming(framing) ? `, size ${Math.round(framing.zoom * 100)}%` : ""}, ${quality})`);
+  openJob(id, dir, (job) =>
+    runJob(
+      job,
+      held ? { path: held.path } : { url: url as string },
+      shortDuration,
+      cropMode as CropMode,
+      quality as OutputQuality,
+      bannerRequests,
+      isLabelRequest(label) ? label : null,
+      tail as TailMode,
+      isReactionRequest(reaction) ? reaction : null,
+      isFraming(framing) ? framing : null,
+      crop,
+      overlays as string[],
+      pitch as number,
+    ),
+  );
 
   send(res, 200, { jobId: id });
 }
@@ -376,6 +481,34 @@ async function changeVoice(req: IncomingMessage, res: ServerResponse) {
     await changeVoicePitch({ url }, out, pitch);
     const info = await stat(out);
     res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": info.size });
+    await pipeline(createReadStream(out), res);
+  } finally {
+    void rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** A Short cut down to `startSec`…`endSec`, sent straight back as the response; its length is in `X-Duration`. */
+async function trimShort(req: IncomingMessage, res: ServerResponse) {
+  const { url, startSec, endSec } = await readJson(req);
+  const ok = isAllowedSource(url) && typeof startSec === "number" && typeof endSec === "number" && startSec >= 0 && endSec - startSec >= 0.5 && endSec - startSec <= MAX_SHORT_SECONDS + 1;
+  if (!ok) {
+    console.warn("Refused a trim request:", { url: String(url).slice(0, 60), startSec, endSec });
+    return send(res, 400, { error: "Bad request." });
+  }
+  const dir = join(tmpdir(), "shortflow-helper", randomUUID());
+  await mkdir(dir, { recursive: true });
+  const out = join(dir, "trimmed.mp4");
+  try {
+    console.log(`trimming a Short to ${startSec.toFixed(2)}–${endSec.toFixed(2)}s`);
+    await trimVideo({ url }, out, startSec, endSec, await encoderReady);
+    const probe = await probeMedia({ url: out });
+    const info = await stat(out);
+    res.writeHead(200, {
+      "Content-Type": "video/mp4",
+      "Content-Length": info.size,
+      "X-Duration": String(probe?.durationSec ?? endSec - startSec),
+      "Access-Control-Expose-Headers": "X-Duration",
+    });
     await pipeline(createReadStream(out), res);
   } finally {
     void rm(dir, { recursive: true, force: true });
@@ -464,7 +597,11 @@ const server = createServer((req, res) => {
       if (req.method === "POST" && path === "/wrap") return startWrap(req, res, searchParams);
       if (req.method === "POST" && path === "/frame") return measureFrame(req, res);
       if (req.method === "POST" && path === "/voice") return changeVoice(req, res);
+      if (req.method === "POST" && path === "/trim") return trimShort(req, res);
       if (req.method === "POST" && path === "/reactions") return saveReaction(req, res);
+      if (req.method === "POST" && path === "/sources") return saveSource(req, res, searchParams.get("key"));
+      const sourceKey = /^\/sources\/([\w-]+)$/.exec(path)?.[1];
+      if (req.method === "DELETE" && sourceKey) return discardSource(sourceKey), send(res, 200, { ok: true });
       if (path.startsWith("/instagram/")) return instagram(req, res, path, searchParams);
       const reactionId = /^\/reactions\/([\w-]+)$/.exec(path)?.[1];
       if (req.method === "DELETE" && reactionId) return discardReaction(reactionId), send(res, 200, { ok: true });

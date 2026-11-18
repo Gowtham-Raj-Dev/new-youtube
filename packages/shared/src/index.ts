@@ -5,3 +5,4 @@ export * from "./format";
 export * from "./slots";
 export * from "./segments";
 export * from "./banners";
+export * from "./framing";

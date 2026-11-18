@@ -114,7 +114,7 @@ export default function GeneratedShortsPage() {
       if (!matchesShortFilter(short, filter)) continue;
       byVideo.set(short.videoId, [...(byVideo.get(short.videoId) ?? []), short]);
     }
-    return [...byVideo].map(([videoId, items]) => ({ videoId, title: videoId === directId ? "Uploaded from your files" : (titles.get(videoId) ?? "Deleted video"), items }));
+    return [...byVideo].map(([videoId, items]) => ({ videoId, title: videoId === directId ? "From your PC" : (titles.get(videoId) ?? "Deleted video"), items }));
   }, [ordered, videos, filter, directId, places]);
 
   const picked = ordered.filter((s) => selected.has(s.id) && canQueue(s)).map((s) => s.id);
@@ -567,6 +567,7 @@ export default function GeneratedShortsPage() {
       )}
 
       {open && <ShortEditorDialog key={open.id} short={open} timezone={timezone} onClose={() => setOpenId(null)}
+          readyShorts={shorts.filter((s) => s.status === "ready")}
           onQueue={(id) => submit([id])}
           onDelete={() => {
             setOpenId(null);

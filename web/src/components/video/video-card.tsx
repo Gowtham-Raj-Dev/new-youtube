@@ -2,9 +2,9 @@
 
 /* eslint-disable @next/next/no-img-element -- Storage download URLs in a static export */
 import type { ReactNode } from "react";
-import { CircleAlert, Clapperboard, Film, LoaderCircle, Pencil, RotateCcw, Scissors, Trash2, X } from "lucide-react";
+import { CircleAlert, Clapperboard, Film, HardDrive, LoaderCircle, Pencil, RotateCcw, Scissors, Trash2, X } from "lucide-react";
 import { formatBytes, formatDuration, type VideoDoc } from "@shortflow/shared";
-import type { WithId } from "@/lib/firebase/hooks";
+import { dismissAdding, useBlobUrl, type AddingVideo, type LibraryVideo } from "@/lib/local-videos";
 import type { UploadItem } from "@/lib/uploads/upload-provider";
 import { useStorageUrl } from "@/lib/videos";
 import { formatInZone, toDate } from "@/lib/time";
@@ -106,8 +106,10 @@ function CenterNote({ icon, title, body, children }: { icon: ReactNode; title: s
   );
 }
 
-function Thumbnail({ video }: { video: WithId<VideoDoc> }) {
-  const url = useStorageUrl(video.thumbnailPath);
+function Thumbnail({ video }: { video: LibraryVideo }) {
+  const cloud = useStorageUrl(video.thumbnailPath);
+  const local = useBlobUrl(video.local?.thumbnail);
+  const url = local ?? cloud;
   if (url) return <img src={url} alt="" loading="lazy" className="absolute inset-0 size-full object-cover transition duration-500 group-hover:scale-[1.03]" />;
   return (
     <div className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_30%_20%,#241a4d,#0e0d14_70%)]">
@@ -121,7 +123,7 @@ export function VideoCard({
   upload,
   timezone,
   ...actions
-}: { video: WithId<VideoDoc>; upload?: UploadItem; timezone: string } & VideoCardActions) {
+}: { video: LibraryVideo; upload?: UploadItem; timezone: string } & VideoCardActions) {
   const phase = phaseOf(video, upload);
   const created = toDate(video.createdAt);
   const generatable = Boolean(actions.onGenerate) && canGenerate(video);
@@ -138,8 +140,14 @@ export function VideoCard({
       <div className="relative aspect-video overflow-hidden bg-surface-2">
         <Thumbnail video={video} />
         {generatable && <button type="button" onClick={actions.onGenerate} className="absolute inset-0" aria-label={`Open ${video.title}`} />}
-        <div className="pointer-events-none absolute left-3 top-3 z-10">
+        <div className="pointer-events-none absolute left-3 top-3 z-10 flex gap-1.5">
           <StatusBadge phase={phase === "uploaded" && video.shortsCount > 0 ? "completed" : phase} />
+          {video.local && (
+            <Badge tone="neutral" className="border-white/15 bg-black/60 text-white backdrop-blur">
+              <HardDrive className="size-3" />
+              On this PC
+            </Badge>
+          )}
         </div>
         {video.durationSec != null && (
           <span className="absolute bottom-3 right-3 rounded-md bg-black/70 px-1.5 py-0.5 font-mono text-[11px] text-white backdrop-blur">
@@ -197,6 +205,32 @@ export function VideoCard({
           )}
         </div>
         {menu.length > 0 && <Menu items={menu} label={`Actions for ${video.title}`} />}
+      </div>
+    </Card>
+  );
+}
+
+/** A file from this PC being read (length, thumbnail, black bars) before it joins the library. */
+export function AddingCard({ item }: { item: AddingVideo }) {
+  return (
+    <Card className="overflow-hidden">
+      <div className="relative aspect-video overflow-hidden bg-surface-2">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,#241a4d,#0e0d14_70%)]" />
+        {item.error ? (
+          <CenterNote icon={<CircleAlert className="size-5 text-danger" />} title="Couldn't add this file" body={item.error}>
+            <Button size="sm" variant="ghost" onClick={() => dismissAdding(item.id)}>
+              Remove
+            </Button>
+          </CenterNote>
+        ) : (
+          <CenterNote icon={<LoaderCircle className="size-5 animate-spin text-accent" />} title="Adding from your PC…" body="Reading its length and making a thumbnail. Nothing is uploaded." />
+        )}
+      </div>
+      <div className="p-4">
+        <h3 className="truncate text-[14.5px] font-semibold tracking-tight" title={item.fileName}>
+          {item.fileName}
+        </h3>
+        <p className="mt-1 text-[12.5px] text-muted">{formatBytes(item.size)}</p>
       </div>
     </Card>
   );

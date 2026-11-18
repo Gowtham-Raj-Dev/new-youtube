@@ -4,6 +4,8 @@ import { useState, type FormEvent } from "react";
 import type { VideoDoc } from "@shortflow/shared";
 import type { WithId } from "@/lib/firebase/hooks";
 import { deleteVideo, renameVideo, type DeleteMode } from "@/lib/videos";
+import { releaseSource } from "@/lib/local-splitter";
+import { deleteLocalVideo, renameLocalVideo, type LibraryVideo } from "@/lib/local-videos";
 import { friendlyCallableError } from "@/lib/youtube";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
@@ -15,7 +17,38 @@ const DELETE_OPTIONS: Array<{ mode: DeleteMode; title: string; body: string }> =
   { mode: "shorts", title: "Delete Shorts only", body: "Keep the original so you can generate Shorts again later." },
 ];
 
-export function DeleteVideoDialog({ video, onClose }: { video: WithId<VideoDoc>; onClose: () => void }) {
+/** A video kept on this PC is only taken out of the library; the file itself and the Shorts already made stay. */
+function RemoveLocalDialog({ video, onClose }: { video: LibraryVideo; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  async function confirm() {
+    setBusy(true);
+    if (video.local) releaseSource(video.local.id);
+    await deleteLocalVideo(video.id);
+    onClose();
+  }
+  return (
+    <Dialog title={`Remove “${video.title}”?`} onClose={onClose} busy={busy}>
+      <p className="mt-2 text-[13.5px] leading-relaxed text-muted">
+        It is taken out of this library. The file on your PC isn&apos;t touched, and the Shorts already made from it stay on the Shorts page.
+      </p>
+      <div className="mt-6 flex justify-end gap-2">
+        <Button variant="ghost" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button variant="danger" onClick={confirm} loading={busy}>
+          Remove
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+export function DeleteVideoDialog({ video, onClose }: { video: LibraryVideo; onClose: () => void }) {
+  if (video.local) return <RemoveLocalDialog video={video} onClose={onClose} />;
+  return <DeleteCloudVideoDialog video={video} onClose={onClose} />;
+}
+
+function DeleteCloudVideoDialog({ video, onClose }: { video: WithId<VideoDoc>; onClose: () => void }) {
   const hasShorts = video.shortsCount > 0;
   const [mode, setMode] = useState<DeleteMode>("everything");
   const [busy, setBusy] = useState(false);
@@ -69,7 +102,7 @@ export function DeleteVideoDialog({ video, onClose }: { video: WithId<VideoDoc>;
   );
 }
 
-export function RenameVideoDialog({ video, onClose }: { video: WithId<VideoDoc>; onClose: () => void }) {
+export function RenameVideoDialog({ video, onClose }: { video: LibraryVideo; onClose: () => void }) {
   const [title, setTitle] = useState(video.title);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +113,8 @@ export function RenameVideoDialog({ video, onClose }: { video: WithId<VideoDoc>;
     if (!trimmed) return;
     setBusy(true);
     try {
-      await renameVideo(video.id, trimmed);
+      if (video.local) await renameLocalVideo(video.id, trimmed);
+      else await renameVideo(video.id, trimmed);
       onClose();
     } catch {
       setError("Couldn't rename the video. Please try again.");

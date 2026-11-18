@@ -50,7 +50,8 @@ service firebase.storage {
       allow create, update: if isOwner(uid)
         && request.resource.size > 0
         // original.mp4: the untouched Short, kept once its voice is changed.
-        && (((fileName == 'video.mp4' || fileName == 'original.mp4') && request.resource.contentType == 'video/mp4' && request.resource.size <= 500 * 1024 * 1024)
+        // untrimmed.mp4: the Short before it was trimmed, kept so the trim can be widened or undone.
+        && (((fileName == 'video.mp4' || fileName == 'original.mp4' || fileName == 'untrimmed.mp4') &&request.resource.contentType == 'video/mp4' && request.resource.size <= 500 * 1024 * 1024)
           || (fileName == 'thumbnail.jpg' && request.resource.contentType == 'image/jpeg' && request.resource.size <= 2 * 1024 * 1024));
 
       allow delete: if false;

@@ -3,17 +3,17 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Film, Sparkles } from "lucide-react";
-import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE, type VideoDoc } from "@shortflow/shared";
+import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useChannelBanners, useChannelUploads, useChannelVideos, useChannelWork, useChannels } from "@/components/providers/channel-provider";
-import { useChannelSettings, useShorts, useUserDoc, type WithId } from "@/lib/firebase/hooks";
-import type { RejectedFile } from "@/lib/uploads/upload-provider";
+import { useChannelSettings, useShorts, useUserDoc } from "@/lib/firebase/hooks";
+import { addLocalVideos, asLibraryVideo, useLocalVideos, type LibraryVideo, type RejectedLocalFile } from "@/lib/local-videos";
 import { matchesFilter, type VideoFilter } from "@/lib/videos";
 import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Dropzone } from "@/components/video/dropzone";
-import { VideoCard, VideoCardSkeleton } from "@/components/video/video-card";
+import { AddingCard, VideoCard, VideoCardSkeleton } from "@/components/video/video-card";
 import { DeleteVideoDialog, RenameVideoDialog } from "@/components/video/video-dialogs";
 import { VideoStudioDialog } from "@/components/video/video-studio";
 import { cn } from "@/lib/cn";
@@ -37,18 +37,23 @@ export default function VideosPage() {
   const { splits, dismissSplit } = useChannelWork();
   const finished = [...splits.values()].filter((job) => job.status !== "working");
 
+  // Long videos are kept on this PC; only the Shorts cut from them are saved online.
+  const { owns } = useChannels();
+  const onThisPc = useLocalVideos(user?.uid);
+  const adding = onThisPc.adding.filter(owns);
+
   // Shorts are registered by the browser, so the count comes from the Shorts themselves.
-  const videos = useMemo(() => {
+  const videos = useMemo<LibraryVideo[]>(() => {
     const perVideo = new Map<string, number>();
     for (const short of shorts) perVideo.set(short.videoId, (perVideo.get(short.videoId) ?? 0) + 1);
-    return storedVideos.map((video) => ({ ...video, shortsCount: perVideo.get(video.id) ?? 0 }));
-  }, [storedVideos, shorts]);
-  const { addFiles, byVideoId, cancel, retry, uploads } = useChannelUploads();
+    return [...onThisPc.videos.filter(owns).map(asLibraryVideo), ...storedVideos.map((video) => ({ ...video, shortsCount: perVideo.get(video.id) ?? 0 }))];
+  }, [storedVideos, shorts, onThisPc.videos, owns]);
+  const { byVideoId, cancel, retry, uploads } = useChannelUploads();
   const [filter, setFilter] = useState<VideoFilter>("all");
-  const [rejected, setRejected] = useState<RejectedFile[]>([]);
-  const [deleting, setDeleting] = useState<WithId<VideoDoc> | null>(null);
-  const [renaming, setRenaming] = useState<WithId<VideoDoc> | null>(null);
-  const [generating, setGenerating] = useState<WithId<VideoDoc> | null>(null);
+  const [rejected, setRejected] = useState<RejectedLocalFile[]>([]);
+  const [deleting, setDeleting] = useState<LibraryVideo | null>(null);
+  const [renaming, setRenaming] = useState<LibraryVideo | null>(null);
+  const [generating, setGenerating] = useState<LibraryVideo | null>(null);
   const timezone = profile?.timezone ?? DEFAULT_TIMEZONE;
 
   const counts = useMemo(
@@ -60,21 +65,23 @@ export default function VideosPage() {
   const unplaced = uploads.filter((u) => u.state === "error" && !videos.some((v) => v.id === u.videoId));
 
   function onFiles(files: File[]) {
-    setRejected(addFiles(files, active?.id));
+    if (user) setRejected(addLocalVideos(files, user.uid, active?.id));
   }
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Video library</h2>
-        <p className="mt-1 text-sm text-muted">Upload long-form videos. ShortFlow checks each one; then you choose how to cut it into vertical Shorts.</p>
+        <p className="mt-1 text-sm text-muted">
+          Add long videos from your PC — they stay on your PC and are never uploaded. Only the Shorts you cut from them are saved, so they can go to YouTube.
+        </p>
       </div>
 
-      {!loading && <Dropzone onFiles={onFiles} compact={videos.length > 0} />}
+      {!loading && <Dropzone onFiles={onFiles} compact={videos.length + adding.length > 0} />}
 
       {rejected.length > 0 && (
         <Alert tone="error" onDismiss={() => setRejected([])}>
-          <p className="font-medium">{rejected.length === 1 ? "1 file wasn't uploaded" : `${rejected.length} files weren't uploaded`}</p>
+          <p className="font-medium">{rejected.length === 1 ? "1 file wasn't added" : `${rejected.length} files weren't added`}</p>
           <ul className="mt-1 space-y-0.5 text-[13px] text-muted">
             {rejected.map((r) => (
               <li key={r.name}>
@@ -148,8 +155,9 @@ export default function VideosPage() {
             <VideoCardSkeleton key={i} />
           ))}
         </div>
-      ) : visible.length > 0 ? (
+      ) : visible.length + adding.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {(filter === "all" || filter === "processing") && adding.map((item) => <AddingCard key={item.id} item={item} />)}
           {visible.map((video) => (
             <VideoCard
               key={video.id}

@@ -1,4 +1,4 @@
-import { doc, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import { doc, serverTimestamp, setDoc, updateDoc, writeBatch } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { getDownloadURL, ref as storageRef, uploadBytes, uploadBytesResumable } from "firebase/storage";
 import {
@@ -34,6 +34,17 @@ export interface ShortMetadata {
   description: string;
   tags: string[];
   privacy: PrivacyStatus;
+}
+
+/** Gives every Short in `shortIds` exactly these keywords (none clears them). Saved in batches of up to 400. */
+export async function setTagsOnShorts(shortIds: string[], tags: string[]) {
+  const { db } = firebase();
+  const kept = tags.slice(0, TAGS_MAX);
+  for (let i = 0; i < shortIds.length; i += 400) {
+    const batch = writeBatch(db);
+    for (const id of shortIds.slice(i, i + 400)) batch.update(doc(db, COLLECTIONS.shorts, id), { tags: kept });
+    await batch.commit();
+  }
 }
 
 export async function saveShortMetadata(shortId: string, metadata: ShortMetadata) {

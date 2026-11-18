@@ -3,7 +3,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { BannerDoc, BannerPosition, SettingsDoc, TailMode, VideoDoc } from "@shortflow/shared";
 import { BrowserRenderError } from "@/lib/browser-render";
-import { HelperOfflineError, ReactionVideoError, splitLocally, type SplitProgress } from "@/lib/local-splitter";
+import { HelperOfflineError, ReactionVideoError, splitLocally, type SplitLook, type SplitProgress } from "@/lib/local-splitter";
+import { countLocalShorts, type LocalVideo } from "@/lib/local-videos";
 import { uploadShortFiles, type ImportProgress, type ReactionChoice, type RejectedShortFile } from "@/lib/shorts";
 
 type WorkStatus = "working" | "done" | "failed";
@@ -49,7 +50,16 @@ interface WorkContextValue {
   startImport: (files: File[], uid: string, settings: Settings, banners: ChosenBanners, reaction?: ReactionChoice | null, connectionId?: string) => void;
   dismissImport: () => void;
   splits: Map<string, SplitJob>;
-  startSplit: (video: VideoDoc & { id: string }, shortDuration: number, settings: Settings, banners: ChosenBanners, label: { template: string; x: number; y: number } | null, tail?: TailMode, reaction?: ReactionChoice | null) => void;
+  startSplit: (
+    video: VideoDoc & { id: string; local?: LocalVideo },
+    shortDuration: number,
+    settings: Settings,
+    banners: ChosenBanners,
+    label: { template: string; x: number; y: number } | null,
+    tail?: TailMode,
+    reaction?: ReactionChoice | null,
+    look?: SplitLook,
+  ) => void;
   dismissSplit: (videoId: string) => void;
 }
 
@@ -142,12 +152,15 @@ export function WorkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startSplit = useCallback<WorkContextValue["startSplit"]>(
-    (video, shortDuration, settings, banners, label, tail, reaction) => {
+    (video, shortDuration, settings, banners, label, tail, reaction, look) => {
       if (splitting.current.has(video.id)) return;
       splitting.current.add(video.id);
       setSplits((prev) => new Map(prev).set(video.id, { videoId: video.id, title: video.title, status: "working", progress: { stage: "Starting", percent: 0 }, count: 0, error: null, connectionId: video.connectionId ?? null }));
-      splitLocally(video, shortDuration, settings, (progress) => patchSplit(video.id, { progress }), banners, label, tail, reaction)
-        .then((count) => patchSplit(video.id, { status: "done", count }))
+      splitLocally(video, shortDuration, settings, (progress) => patchSplit(video.id, { progress }), banners, label, tail, reaction, look)
+        .then((count) => {
+          if (video.local) void countLocalShorts(video.id, count);
+          patchSplit(video.id, { status: "done", count });
+        })
         .catch((err) => patchSplit(video.id, { status: "failed", error: err instanceof Error ? err.message : "Something went wrong. Please try again." }))
         .finally(() => splitting.current.delete(video.id));
     },

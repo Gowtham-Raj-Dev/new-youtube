@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, type DragEvent } from "react";
-import { CloudUpload, Upload } from "lucide-react";
+import { FolderOpen, Plus } from "lucide-react";
 import { ACCEPTED_VIDEO_TYPES } from "@shortflow/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
@@ -64,12 +64,12 @@ export function Dropzone({ onFiles, compact }: { onFiles: (files: File[]) => voi
           over ? "border-accent bg-accent-soft" : "border-line-strong bg-surface/60",
         )}
       >
-        <CloudUpload className={cn("size-5 shrink-0", over ? "text-accent" : "text-faint")} />
+        <FolderOpen className={cn("size-5 shrink-0", over ? "text-accent" : "text-faint")} />
         <p className="flex-1 text-center text-[13.5px] text-muted sm:text-left">
-          {over ? "Drop to upload" : "Drop more long videos here — MP4, MOV, MKV or WebM, up to 10 GB each."}
+          {over ? "Drop to add" : "Drop more long videos here — MP4, MOV, MKV or WebM. They stay on your PC; nothing is uploaded."}
         </p>
-        <Button size="sm" variant="secondary" icon={<Upload className="size-3.5" />} onClick={pick}>
-          Upload Video
+        <Button size="sm" variant="secondary" icon={<Plus className="size-3.5" />} onClick={pick}>
+          Add video
         </Button>
         {fileInput}
       </div>
@@ -90,19 +90,19 @@ export function Dropzone({ onFiles, compact }: { onFiles: (files: File[]) => voi
     >
       <div aria-hidden className={cn("absolute inset-x-0 top-0 h-40 bg-[radial-gradient(ellipse_at_top,var(--accent-soft),transparent_70%)] transition-opacity", over ? "opacity-100" : "opacity-0 group-hover:opacity-100")} />
       <div className={cn("relative mb-5 grid size-16 place-items-center rounded-2xl border border-line-strong bg-surface-2 transition-transform duration-300", over ? "-translate-y-1 scale-110" : "group-hover:-translate-y-0.5")}>
-        <CloudUpload className={cn("size-7", over ? "text-accent" : "text-muted")} />
+        <FolderOpen className={cn("size-7", over ? "text-accent" : "text-muted")} />
       </div>
-      <h3 className="relative text-lg font-semibold tracking-tight">{over ? "Release to upload" : "Drop your long video here"}</h3>
-      <p className="relative mt-1.5 text-sm text-muted">MP4, MOV, MKV and WebM · up to 10 GB · uploads keep going while you browse</p>
+      <h3 className="relative text-lg font-semibold tracking-tight">{over ? "Release to add" : "Drop your long video here"}</h3>
+      <p className="relative mt-1.5 text-sm text-muted">MP4, MOV, MKV and WebM · up to 10 GB · stays on your PC, nothing is uploaded</p>
       <Button
         className="relative mt-6"
-        icon={<Upload className="size-4" />}
+        icon={<Plus className="size-4" />}
         onClick={(e) => {
           e.stopPropagation();
           pick();
         }}
       >
-        Upload Video
+        Add video
       </Button>
       {fileInput}
     </div>

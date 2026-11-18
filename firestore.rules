@@ -259,6 +259,18 @@ service cloud.firestore {
             && incoming().voice.preset is string && incoming().voice.preset.size() > 0 && incoming().voice.preset.size() <= 20
             && incoming().voice.pitch is number && incoming().voice.pitch >= 0.6 && incoming().voice.pitch <= 1.6));
 
+      // Trimmed on the user's PC (the file itself is swapped in Storage): its new length and the part kept.
+      allow update: if ownsExisting()
+        && resource.data.status in ['ready', 'scheduled', 'failed', 'quota_exceeded']
+        && changedKeys().hasOnly(['durationSec', 'trim'])
+        && incoming().durationSec is number && incoming().durationSec > 0 && incoming().durationSec <= 180
+        && (incoming().trim == null
+          || (incoming().trim is map
+            && incoming().trim.keys().hasOnly(['startSec', 'endSec', 'fullSec'])
+            && incoming().trim.startSec is number && incoming().trim.startSec >= 0
+            && incoming().trim.endSec is number && incoming().trim.endSec > incoming().trim.startSec
+            && incoming().trim.fullSec is number && incoming().trim.fullSec >= incoming().trim.endSec - 0.05 && incoming().trim.fullSec <= 600));
+
       allow delete: if false;
     }
 

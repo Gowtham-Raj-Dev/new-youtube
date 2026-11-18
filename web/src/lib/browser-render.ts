@@ -1,5 +1,6 @@
-import { SHORT_HEIGHT, SHORT_WIDTH, type BannerPosition, type CropMode, type OutputQuality, type ReactionLook } from "@shortflow/shared";
+import { SHORT_HEIGHT, SHORT_WIDTH, placePicture, type BannerPosition, type CropMode, type Framing, type OutputQuality, type ReactionLook } from "@shortflow/shared";
 import type { AudioSample, VideoSample, WrappedCanvas } from "mediabunny";
+import { decodeSound, pitchShift } from "./pitch";
 
 /**
  * Renders a Short in the browser itself, for when the PC helper isn't running:
@@ -26,6 +27,14 @@ export interface BrowserRenderJob {
   reaction: (Pick<ReactionLook, "position" | "fit" | "focus" | "sound"> & { file: Blob; height: number }) | null;
   /** Text centred on (`x`, `y`), each a 0–1 share of the frame. */
   label: { text: string; x: number; y: number } | null;
+  /** The user's own size and place for the picture — see `placePicture()`. `cropMode` then only says black or blur behind it. */
+  framing?: Framing | null;
+  /** Black bars baked into the source: the real picture, as 0–1 shares of the frame. */
+  picture?: { x: number; y: number; width: number; height: number } | null;
+  /** A see-through 1080×1920 layer (the text boxes) drawn over everything. */
+  overlay?: OffscreenCanvas | ImageBitmap | null;
+  /** Voice pitch, 0.6–1.6 (1 = untouched); the length stays the same. */
+  pitch?: number;
 }
 
 export interface BrowserRenderResult {
@@ -164,6 +173,40 @@ async function openReactionSound(file: Blob, period: number, Sample: typeof Audi
 }
 
 /**
+ * The Short's sound with its voice pitched: the whole part is decoded and
+ * changed once up front, then each piece of sound going to the encoder is
+ * swapped for the changed sound at the same moment. Null when there is no sound.
+ */
+async function openNewVoice(job: BrowserRenderJob, sourceDuration: number, Sample: typeof AudioSample) {
+  const from = job.trim?.startSec ?? 0;
+  const to = job.trim?.endSec ?? sourceDuration;
+  const decoded = await decodeSound(job.source, Math.max(0, from - 0.2), to + 0.2);
+  if (!decoded) return null;
+  const changed = pitchShift(decoded.channels, decoded.rate, job.pitch ?? 1);
+  // Whether the encoder's timestamps count from the start of the part or of the source — told apart by the first one.
+  let offset: number | null = null;
+  return (sample: AudioSample): AudioSample => {
+    offset ??= sample.timestamp < from - 0.5 ? from : 0;
+    const { sampleRate, numberOfFrames: frames, numberOfChannels: channels } = sample;
+    const data = new Float32Array(frames * channels);
+    const start = (sample.timestamp + offset - decoded.startSec) * decoded.rate;
+    const step = decoded.rate / sampleRate;
+    for (let c = 0; c < channels; c++) {
+      const src = changed[Math.min(c, changed.length - 1)];
+      const to = data.subarray(c * frames, (c + 1) * frames);
+      for (let i = 0; i < frames; i++) {
+        const at = start + i * step;
+        const j = Math.floor(at);
+        if (j < 0 || j + 1 >= src.length) continue;
+        const f = at - j;
+        to[i] = src[j] * (1 - f) + src[j + 1] * f;
+      }
+    }
+    return new Sample({ data, format: "f32-planar", numberOfChannels: channels, sampleRate, timestamp: sample.timestamp });
+  };
+}
+
+/**
  * Renders one Short. `onProgress` gets the share done, 0–1. Throws BrowserRenderError with a message for the user.
  * The graphics card's encoder gives up now and then (busy, or out of sessions), so a render that
  * breaks is run once more on the browser's own, slower encoder before it counts as failed.
@@ -197,6 +240,7 @@ async function renderOnce(job: BrowserRenderJob, software: boolean, onProgress?:
     const track = await input.getPrimaryVideoTrack().catch(() => null);
     if (!track) throw new BrowserRenderError("This file isn't a video your browser can read.");
     const sourceDuration = await input.computeDuration();
+    const newVoice = job.pitch && Math.abs(job.pitch - 1) >= 0.005 ? await openNewVoice(job, sourceDuration, Sample) : null;
 
     const { top, bottom } = job.banners;
     const topHeight = top?.height ?? 0;
@@ -229,7 +273,27 @@ async function renderOnce(job: BrowserRenderJob, software: boolean, onProgress?:
       ctx.fillRect(0, 0, SHORT_WIDTH, SHORT_HEIGHT);
 
       // The Short's own picture, in the slot the banners and the reaction video leave.
-      if (job.cropMode === "fit" || job.cropMode === "blur") {
+      if (job.framing) {
+        // Black bars baked into the source are left out first, as the PC helper does.
+        const pic = job.picture ?? { x: 0, y: 0, width: 1, height: 1 };
+        const px = pic.x * sw;
+        const py = pic.y * sh;
+        const pw = pic.width * sw;
+        const ph = pic.height * sh;
+        if (job.cropMode === "blur" && smallCtx) {
+          const part = coverRect(pw, ph, small.width, small.height);
+          sample.draw(smallCtx, px + part.x, py + part.y, part.width, part.height, 0, 0, small.width, small.height);
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(0, videoY, SHORT_WIDTH, videoHeight);
+          ctx.clip();
+          if (canBlur) ctx.filter = "blur(24px)";
+          ctx.drawImage(small, -40, videoY - 40, SHORT_WIDTH + 80, videoHeight + 80);
+          ctx.restore();
+        }
+        const { source, dest } = placePicture(pw, ph, SHORT_WIDTH, videoHeight, job.framing);
+        if (dest.width >= 1 && dest.height >= 1) sample.draw(ctx, px + source.x, py + source.y, source.width, source.height, dest.x, videoY + dest.y, dest.width, dest.height);
+      } else if (job.cropMode === "fit" || job.cropMode === "blur") {
         if (job.cropMode === "blur" && smallCtx) {
           const part = coverRect(sw, sh, small.width, small.height);
           sample.draw(smallCtx, part.x, part.y, part.width, part.height, 0, 0, small.width, small.height);
@@ -271,6 +335,8 @@ async function renderOnce(job: BrowserRenderJob, software: boolean, onProgress?:
           }
         }
       }
+
+      if (job.overlay) ctx.drawImage(job.overlay, 0, 0, SHORT_WIDTH, SHORT_HEIGHT);
 
       if (job.label && labelText) {
         ctx.font = `bold ${LABEL_FONT_SIZE}px Arial, sans-serif`;
@@ -315,8 +381,17 @@ async function renderOnce(job: BrowserRenderJob, software: boolean, onProgress?:
           return canvas;
         },
       },
-      // Only touched when there is reaction sound to add; otherwise the Short's sound is passed through as it is.
-      audio: mixSound ? { forceTranscode: true, process: mixSound } : undefined,
+      // Only touched when the voice changes or there is reaction sound to add; otherwise the Short's sound is passed through as it is.
+      audio:
+        newVoice || mixSound
+          ? {
+              forceTranscode: true,
+              process: async (sample) => {
+                const voiced = newVoice ? newVoice(sample) : sample;
+                return mixSound ? mixSound(voiced) : voiced;
+              },
+            }
+          : undefined,
       showWarnings: false,
     });
 
@@ -342,6 +417,34 @@ async function renderOnce(job: BrowserRenderJob, software: boolean, onProgress?:
     return { video: new Blob([buffer], { type: "video/mp4" }), thumbnail, durationSec: Math.round(length * 100) / 100 };
   } finally {
     await reaction?.close().catch(() => undefined);
+    input.dispose();
+  }
+}
+
+/**
+ * `startSec`…`endSec` of a finished Short, cut in this browser (encoded again,
+ * so the cut lands on the exact frame). For when the PC helper isn't running.
+ */
+export async function trimInBrowser(source: Blob | string, startSec: number, endSec: number, onProgress?: (share: number) => void): Promise<Blob> {
+  const { ALL_FORMATS, BlobSource, BufferTarget, Conversion, Input, Mp4OutputFormat, Output, QUALITY_VERY_HIGH, UrlSource } = await import("mediabunny");
+  const input = new Input({ source: typeof source === "string" ? new UrlSource(source) : new BlobSource(source), formats: ALL_FORMATS });
+  try {
+    const output = new Output({ format: new Mp4OutputFormat({ fastStart: "in-memory" }), target: new BufferTarget() });
+    const conversion = await Conversion.init({
+      input,
+      output,
+      trim: { start: startSec, end: endSec },
+      video: { codec: "avc", quality: QUALITY_VERY_HIGH, forceTranscode: true },
+      audio: { codec: "aac", forceTranscode: true },
+      showWarnings: false,
+    });
+    if (!conversion.isValid) throw new BrowserRenderError("Your browser can't cut this Short. Use Chrome or Edge, or the PC helper.");
+    conversion.onProgress = (share) => onProgress?.(share);
+    await conversion.execute();
+    const buffer = output.target.buffer;
+    if (!buffer) throw new BrowserRenderError("The Short couldn't be cut in this browser.");
+    return new Blob([buffer], { type: "video/mp4" });
+  } finally {
     input.dispose();
   }
 }

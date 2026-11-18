@@ -92,7 +92,9 @@ export function directUploadVideoId(uid: string): string {
 
 /** A short id for one Generate run; later runs sort after earlier ones. */
 export function newRunId(now = Date.now()): string {
-  return Math.floor(now / 1000).toString(36);
+  // Two random letters keep two runs started in the same second apart (several videos can share one `videoId`).
+  // At most 10 characters — see the id pattern in firestore.rules.
+  return Math.floor(now / 1000).toString(36) + Math.floor(Math.random() * 1296).toString(36).padStart(2, "0");
 }
 
 /** Fills `{videoTitle}`, `{part}` (01, 02, …) and `{total}`, within YouTube's 100-character title limit. */

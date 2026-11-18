@@ -2,10 +2,11 @@
 
 /* eslint-disable @next/next/no-img-element -- Storage download URLs in a static export */
 import { useState, type FormEvent } from "react";
-import { Download, ExternalLink, ListPlus, ListX, ShieldCheck, Trash2 } from "lucide-react";
+import { Download, ExternalLink, ListPlus, ListX, Scissors, ShieldCheck, Trash2 } from "lucide-react";
 import { PRIVACY_STATUSES, formatDuration, type PrivacyStatus, type ShortDoc, type YoutubeCheckState } from "@shortflow/shared";
 import type { WithId } from "@/lib/firebase/hooks";
-import { DESCRIPTION_MAX, TAG_CHARS_MAX, TITLE_MAX, canEdit, canQueue, checkYouTubeStatus, downloadShorts, saveShortMetadata, tagChars, unqueueShort, youtubeShortUrl } from "@/lib/shorts";
+import { DESCRIPTION_MAX, TAG_CHARS_MAX, TAGS_MAX, TITLE_MAX, canEdit, canQueue, checkYouTubeStatus, downloadShorts, parseTags, saveShortMetadata, setTagsOnShorts, tagChars, unqueueShort, youtubeShortUrl } from "@/lib/shorts";
+import { KeywordActions } from "./keyword-actions";
 import { useStorageUrl } from "@/lib/videos";
 import { friendlyCallableError } from "@/lib/youtube";
 import { formatInZone, toDate } from "@/lib/time";
@@ -14,6 +15,7 @@ import { Dialog } from "@/components/ui/dialog";
 import { Field, inputClasses } from "@/components/ui/field";
 import { ShortStatusBadge } from "./short-card";
 import { TagInput } from "./tag-input";
+import { TrimEditor } from "./trim-editor";
 import { cn } from "@/lib/cn";
 
 const PRIVACY_LABELS: Record<PrivacyStatus, string> = { public: "Public", unlisted: "Unlisted", private: "Private" };
@@ -36,9 +38,12 @@ export function ShortEditorDialog({
   onClose,
   onQueue,
   onDelete,
+  readyShorts = [],
 }: {
   short: WithId<ShortDoc>;
   timezone: string;
+  /** The channel's Shorts that are ready (not queued or out yet) — keywords can be set on all of them at once. */
+  readyShorts?: WithId<ShortDoc>[];
   onClose: () => void;
   /** True once queued. On failure the caller shows why and this resolves false. */
   onQueue: (shortId: string) => Promise<boolean>;
@@ -53,7 +58,12 @@ export function ShortEditorDialog({
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
-  const videoUrl = useStorageUrl(short.fileDeletedAt ? null : short.storagePath);
+  const [trimming, setTrimming] = useState(false);
+  const [trimmed, setTrimmed] = useState(false);
+  const storedUrl = useStorageUrl(short.fileDeletedAt ? null : short.storagePath);
+  // After a trim the file at the same address is new; the version makes the browser fetch it fresh.
+  const version = short.trim ? `${short.trim.startSec}-${short.trim.endSec}` : `whole-${short.durationSec}`;
+  const videoUrl = storedUrl && `${storedUrl}${storedUrl.includes("?") ? "&" : "?"}v=${version}`;
   const posterUrl = useStorageUrl(short.thumbnailPath);
   const editable = canEdit(short);
   const publishAt = toDate(short.publishAt);
@@ -117,6 +127,17 @@ export function ShortEditorDialog({
   return (
     <Dialog title="Short details" onClose={onClose} busy={busy !== null} width="max-w-4xl">
       <form onSubmit={onSubmit} className="mt-4 grid gap-6 md:grid-cols-[auto_minmax(0,1fr)]">
+        {trimming ? (
+          <div className="md:w-[340px]">
+            <TrimEditor
+              short={short}
+              onDone={(saved) => {
+                setTrimming(false);
+                setTrimmed(saved);
+              }}
+            />
+          </div>
+        ) : (
         <div>
           {/* Sized from the window height so the whole dialog fits without scrolling. */}
           <div className="mx-auto aspect-[9/16] h-[min(460px,calc(100dvh-15rem))] overflow-hidden rounded-xl border border-line bg-black">
@@ -141,13 +162,23 @@ export function ShortEditorDialog({
                   : `Part ${short.segmentIndex + 1} · ${formatDuration(short.durationSec)}`}
               </span>
             </span>
-            {!short.fileDeletedAt && (
-              <button type="button" onClick={() => void downloadShorts([short])} className={buttonClasses("ghost", "sm", "shrink-0 px-2")} aria-label="Download this Short">
-                <Download className="size-3.5" />
-                Download
-              </button>
-            )}
+            <span className="flex shrink-0 items-center">
+              {!short.fileDeletedAt && editable && (
+                <button type="button" onClick={() => (setTrimming(true), setTrimmed(false))} className={buttonClasses("ghost", "sm", "shrink-0 px-2")} aria-label="Trim this Short">
+                  <Scissors className="size-3.5" />
+                  Trim
+                </button>
+              )}
+              {!short.fileDeletedAt && (
+                <button type="button" onClick={() => void downloadShorts([short])} className={buttonClasses("ghost", "sm", "shrink-0 px-2")} aria-label="Download this Short">
+                  <Download className="size-3.5" />
+                  Download
+                </button>
+              )}
+            </span>
           </div>
+          {trimmed && <p className="mt-2 rounded-lg border border-success/25 bg-success/10 px-3 py-2 text-[12.5px] text-success">Trimmed and saved{short.trim ? ` — keeps ${formatDuration(short.durationSec)}` : " — the whole Short is back"}.</p>}
+          {short.trim && !trimmed && <p className="mt-2 text-[12px] text-faint">Trimmed from a {formatDuration(short.trim.fullSec)} Short. Open Trim to change it or bring the whole Short back.</p>}
           {short.youtubeVideoId && (
             <a href={youtubeShortUrl(short.youtubeVideoId)} target="_blank" rel="noreferrer" className={buttonClasses("secondary", "sm", "mt-3 w-full")}>
               <ExternalLink className="size-3.5" />
@@ -155,6 +186,7 @@ export function ShortEditorDialog({
             </a>
           )}
         </div>
+        )}
 
         <div className="flex min-w-0 flex-col gap-3.5">
           {short.errorMessage && <p className="rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[13px] text-danger">{short.errorMessage}</p>}
@@ -198,10 +230,32 @@ export function ShortEditorDialog({
 
           {/* Not a <label>: clicking a chip's remove button must not refocus the input. */}
           <div>
-            <div className="mb-1.5 flex items-baseline justify-between gap-3">
+            <div className="mb-1.5 flex items-center justify-between gap-3">
               <span className="text-[13px] font-medium">Keywords</span>
-              <span className={cn("text-[11.5px] tabular-nums", tagLength > TAG_CHARS_MAX ? "text-danger" : "text-faint")}>
-                {tagLength} / {TAG_CHARS_MAX}
+              <span className="flex items-center gap-1">
+                {editable && (
+                  <KeywordActions
+                    tags={tags}
+                    readyCount={readyShorts.length}
+                    disabled={busy !== null}
+                    onClearHere={() => (setTags([]), setSaved(false))}
+                    onPaste={(pasted) => (setTags(parseTags([...tags, ...pasted].join(",")).slice(0, TAGS_MAX)), setSaved(false))}
+                    onToAll={async (next) => {
+                      setError(null);
+                      try {
+                        await setTagsOnShorts(readyShorts.map((s) => s.id).concat(readyShorts.some((s) => s.id === short.id) ? [] : [short.id]), next);
+                        setTags(next);
+                        return true;
+                      } catch {
+                        setError("Couldn't change the keywords on all the Shorts. Check your connection and try again.");
+                        return false;
+                      }
+                    }}
+                  />
+                )}
+                <span className={cn("ml-1 text-[11.5px] tabular-nums", tagLength > TAG_CHARS_MAX ? "text-danger" : "text-faint")}>
+                  {tagLength} / {TAG_CHARS_MAX}
+                </span>
               </span>
             </div>
             <TagInput tags={tags} disabled={!editable} onChange={(next) => (setTags(next), setSaved(false))} />

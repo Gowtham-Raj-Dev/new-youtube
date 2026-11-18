@@ -3,13 +3,16 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage
 import {
   BANNER_POSITIONS,
   COLLECTIONS,
+  directUploadVideoId,
   newRunId,
+  planSegments,
   shortFileName,
   shortIdFor,
   shortTitle,
   storagePaths,
   type BannerDoc,
   type BannerPosition,
+  type Framing,
   type ReactionLook,
   type Segment,
   type SettingsDoc,
@@ -19,6 +22,9 @@ import {
 import { canRenderInBrowser } from "./browser-render";
 import { splitInBrowser } from "./browser-splitter";
 import { firebase } from "./firebase/client";
+import type { LocalVideo } from "./local-videos";
+import { changesPerPart, renderTextLayer, textLayerPng, type TextBox } from "./text-boxes";
+import { partDetails, type ShortDetails } from "./short-details";
 
 /** The PC helper (`npm run helper`, started by `npm run dev`). It cuts with FFmpeg on this machine, so no cloud compute is used. */
 export const HELPER = "http://127.0.0.1:4777";
@@ -68,6 +74,59 @@ export interface SourceFrame {
   width: number;
   height: number;
   crop: { width: number; height: number; x: number; y: number } | null;
+}
+
+/** How the picture sits in each Short: the user's framing, and the frame it was measured on (null: let the helper measure). */
+export interface SplitLook {
+  framing: Framing | null;
+  frame: SourceFrame | null;
+  /** Text boxes put on every Short. */
+  text?: TextBox[];
+  /** Voice pitch, 0.6–1.6 (1 = the video's own voice). */
+  pitch?: number;
+  /** Title, description and tags for every Short; without it the channel's defaults are used. */
+  details?: ShortDetails;
+}
+
+/** Title, description, tags and privacy of part `n` of `total`. */
+export function metadataFor(look: SplitLook, settings: Pick<SettingsDoc, "publishing">, videoTitle: string, n: number, total: number) {
+  if (look.details) return partDetails(look.details, n, total);
+  const { publishing } = settings;
+  return { title: shortTitle(publishing.titleTemplate, videoTitle, n, total), description: publishing.defaultDescription, tags: publishing.defaultTags, privacy: publishing.defaultPrivacy };
+}
+
+/** The text layer for each part as base64 PNG — one shared by all when nothing in it changes from part to part. */
+async function textLayers(boxes: TextBox[], title: string, total: number): Promise<string[]> {
+  if (boxes.length === 0 || total === 0) return [];
+  const layers: string[] = [];
+  for (let n = 1; n <= (changesPerPart(boxes) ? total : 1); n++) {
+    const canvas = await renderTextLayer(boxes, { n, total, title });
+    if (!canvas) return [];
+    layers.push(await textLayerPng(canvas));
+  }
+  return layers;
+}
+
+/**
+ * Hands a video kept on this PC to the PC helper (over 127.0.0.1 — it never
+ * leaves the machine). The helper keeps it under the video's id, so cutting
+ * the same video again doesn't send it twice.
+ */
+async function holdSource(video: LocalVideo): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch(`${HELPER}/sources?key=${encodeURIComponent(video.id)}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: video.file });
+  } catch {
+    throw new HelperOfflineError();
+  }
+  if (res.status === 404) throw new Error("The PC helper that's running is an older version. Close it and start it again (stop and re-run “npm run dev”, or download and open the newest ShortFlowHelper.exe), then try again.");
+  if (!res.ok) throw new Error("The PC helper couldn't take the video. Check its window for details.");
+  return ((await res.json()) as { id: string }).id;
+}
+
+/** Lets the PC helper delete its copy of a video kept on this PC. */
+export function releaseSource(id: string) {
+  void fetch(`${HELPER}/sources/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => undefined);
 }
 
 /** Measures a source video via the helper, for the preview. Null if the helper is off or can't tell. */
@@ -177,7 +236,7 @@ export async function addBannersLocally(
  * Returns how many Shorts were made. Cutting a video again adds a new set.
  */
 export async function splitLocally(
-  video: VideoDoc & { id: string },
+  video: VideoDoc & { id: string; local?: LocalVideo },
   shortDuration: number,
   settings: Pick<SettingsDoc, "processing" | "publishing">,
   onProgress: (progress: SplitProgress) => void,
@@ -188,10 +247,13 @@ export async function splitLocally(
   tail: TailMode = "own",
   /** A reaction video played in a strip on every Short. */
   reactionChoice: (ReactionLook & { file: Blob }) | null = null,
+  look: SplitLook = { framing: null, frame: null },
 ): Promise<number> {
   const { db, storage } = firebase();
   onProgress({ stage: "Starting", percent: 0 });
-  if ((await pickEngine()) === "browser") return splitInBrowser(video, shortDuration, settings, onProgress, chosenBanners, label, tail, reactionChoice);
+  if ((await pickEngine()) === "browser") return splitInBrowser(video, shortDuration, settings, onProgress, chosenBanners, label, tail, reactionChoice, look);
+  // Shorts cut from a video kept on this PC aren't tied to a cloud video, so they go with the user's own files.
+  const shortsOf = video.local ? directUploadVideoId(video.userId) : video.id;
   // The helper keeps the one reaction video and puts it on every Short it cuts.
   let reaction: HeldReaction | null = null;
   if (reactionChoice) {
@@ -204,11 +266,40 @@ export async function splitLocally(
   let jobId: string | null = null;
 
   try {
-    const url = await getDownloadURL(storageRef(storage, video.storagePath));
     const banners = await bannerSources(chosenBanners);
-    ({ jobId } = (await (
-      await helper("/split", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, shortDuration, cropMode, quality: outputQuality, banners, label, tail, reaction }) })
-    ).json()) as { jobId: string });
+    // The measured black bars go along, so the Shorts match the preview; without a measurement the helper finds them itself.
+    onProgress({ stage: "Drawing the text", percent: 0.5 });
+    const overlays = await textLayers(look.text ?? [], look.details?.name || video.title, planSegments(video.durationSec ?? 0, shortDuration, tail).length);
+    const options = {
+      shortDuration,
+      cropMode,
+      quality: outputQuality,
+      banners,
+      label,
+      tail,
+      reaction,
+      framing: look.framing,
+      overlays,
+      pitch: look.pitch ?? 1,
+      ...(look.frame ? { crop: look.frame.crop } : {}),
+    };
+    const start = async (from: { url: string } | { sourceId: string }) => fetch(`${HELPER}/split`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...from, ...options }) });
+    let res: Response;
+    try {
+      if (video.local) {
+        onProgress({ stage: "Handing the video to the PC helper", percent: 1 });
+        res = await start({ sourceId: await holdSource(video.local) });
+        // The helper was restarted in between and lost it: send it once more.
+        if (res.status === 410) res = await start({ sourceId: await holdSource(video.local) });
+      } else {
+        res = await start({ url: await getDownloadURL(storageRef(storage, video.storagePath)) });
+      }
+    } catch (error) {
+      if (error instanceof TypeError) throw new HelperOfflineError();
+      throw error;
+    }
+    if (!res.ok) throw new Error("The PC helper couldn't do that. If it was started before this update, close it and start it again — then check its window for details.");
+    ({ jobId } = (await res.json()) as { jobId: string });
 
     // Cutting is the slow part: it fills the first 80% of the bar.
     let job: HelperJob;
@@ -225,10 +316,11 @@ export async function splitLocally(
       const number = part.index + 1;
       onProgress({ stage: `Saving Short ${number} / ${total}`, percent: 80 + (part.index / total) * 20 });
 
-      const shortId = shortIdFor(video.id, run, part.index);
+      const shortId = shortIdFor(shortsOf, run, part.index);
       const shortRef = doc(db, COLLECTIONS.shorts, shortId);
 
-      const title = shortTitle(settings.publishing.titleTemplate, video.title, number, total);
+      const meta = metadataFor(look, settings, video.title, number, total);
+    const title = meta.title;
       const storagePath = storagePaths.shortVideo(video.userId, shortId);
       const file = await (await helper(`/jobs/${jobId}/${number}.mp4`)).blob();
       // `attachment` makes the browser save the file when its URL is opened; <video> still plays it.
@@ -248,7 +340,7 @@ export async function splitLocally(
       // Field set must match firestore.rules.
       await setDoc(shortRef, {
         userId: video.userId,
-        videoId: video.id,
+        videoId: shortsOf,
         segmentIndex: part.index,
         startSec: part.startSec,
         endSec: part.endSec,
@@ -259,9 +351,9 @@ export async function splitLocally(
         status: "ready",
         createdAt: serverTimestamp(),
         title,
-        description: settings.publishing.defaultDescription,
-        tags: settings.publishing.defaultTags,
-        privacy: settings.publishing.defaultPrivacy,
+        description: meta.description,
+        tags: meta.tags,
+        privacy: meta.privacy,
         categoryId: settings.publishing.categoryId,
         publishAt: null,
         youtubeVideoId: null,

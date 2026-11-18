@@ -6,7 +6,7 @@ import ffmpegPath from "ffmpeg-static";
 import ffprobe from "@ffprobe-installer/ffprobe";
 import * as logger from "firebase-functions/logger";
 import { getStorage } from "firebase-admin/storage";
-import { SHORT_HEIGHT, SHORT_WIDTH, type CropMode, type OutputQuality, type ReactionFit, type ReactionPosition } from "@shortflow/shared";
+import { SHORT_HEIGHT, SHORT_WIDTH, placePicture, type CropMode, type Framing, type OutputQuality, type ReactionFit, type ReactionPosition } from "@shortflow/shared";
 
 /** Where ffmpeg reads from. Always a 127.0.0.1 URL, a local path in tests. */
 export interface MediaInput {
@@ -186,6 +186,35 @@ function frameFilter(source: string, cropMode: CropMode, height: number, out: st
   }
 }
 
+const even = (n: number) => Math.max(2, 2 * Math.round(n / 2));
+
+/**
+ * The user's own framing: the picture (`pw`×`ph`, already free of black bars) at
+ * the size and place `placePicture()` gives it, on black or on a blurred copy.
+ * Only the part that shows is scaled, so a big zoom costs no more than a small one.
+ */
+function framedFilter(source: string, pw: number, ph: number, framing: Framing, blur: boolean, height: number, out: string): string {
+  const size = `${SHORT_WIDTH}:${height}`;
+  const { source: part, dest } = placePicture(pw, ph, SHORT_WIDTH, height, framing);
+  const cw = Math.max(2, Math.min(pw, Math.round(part.width)));
+  const ch = Math.max(2, Math.min(ph, Math.round(part.height)));
+  const cx = Math.max(0, Math.min(pw - cw, Math.round(part.x)));
+  const cy = Math.max(0, Math.min(ph - ch, Math.round(part.y)));
+  const dw = Math.min(SHORT_WIDTH, even(dest.width));
+  const dh = Math.min(height, even(dest.height));
+  const dx = Math.max(0, Math.min(SHORT_WIDTH - dw, Math.round(dest.x)));
+  const dy = Math.max(0, Math.min(height - dh, Math.round(dest.y)));
+  const fg = `crop=${cw}:${ch}:${cx}:${cy},scale=${dw}:${dh}:flags=bicubic,setsar=1`;
+  if (!blur) return `[${source}]${fg},pad=${size}:${dx}:${dy}:black,setsar=1[${out}]`;
+  const small = `${SHORT_WIDTH / 4}:${2 * Math.round(height / 8)}`;
+  return [
+    `[${source}]split=2[bgsrc][fgsrc]`,
+    `[bgsrc]scale=${small}:force_original_aspect_ratio=increase,crop=${small},boxblur=10:2,scale=${size}:flags=fast_bilinear,setsar=1[bg]`,
+    `[fgsrc]${fg}[fg]`,
+    `[bg][fg]overlay=${dx}:${dy},setsar=1[${out}]`,
+  ].join(";");
+}
+
 /** An image laid across the top or bottom of the Short, at the canvas height `bannerHeight()` gives it. */
 export interface BannerImage {
   path: string;
@@ -222,6 +251,17 @@ export interface ShortRender {
   crop?: CropRect | null;
   /** Text burned onto the Short, centred on (`x`, `y`) — each a 0–1 share of the frame's width and height. */
   label?: { text: string; x: number; y: number } | null;
+  /**
+   * The user's own size and place for the picture. Needs `sourceSize`. `cropMode`
+   * then only says what fills the rest: `blur` a blurred copy, anything else black.
+   */
+  framing?: Framing | null;
+  /** Width and height of the source frame (as ffprobe reports it), for `framing`. */
+  sourceSize?: { width: number; height: number } | null;
+  /** A see-through 1080×1920 PNG laid over everything (the app's text boxes). */
+  overlay?: string | null;
+  /** Voice pitch, 0.6–1.6 (1 = untouched); the length stays the same. Needs `sourceHasAudio`. */
+  pitch?: number;
 }
 
 /** Label text size and the padding of the dark box behind it, in canvas pixels. The web preview mirrors these. */
@@ -322,7 +362,12 @@ export async function renderShort(input: MediaInput, render: ShortRender, outPat
   // Black bars baked into the source go first, so the picture itself is what gets framed.
   const { crop } = render;
   const cropped = crop ? `[0:v]crop=${crop.width}:${crop.height}:${crop.x}:${crop.y}[picture];` : "";
-  let filter = cropped + frameFilter(crop ? "picture" : "0:v", render.cropMode, videoHeight, "framed");
+  const picture = crop ?? render.sourceSize;
+  let filter =
+    cropped +
+    (render.framing && picture
+      ? framedFilter(crop ? "picture" : "0:v", picture.width, picture.height, render.framing, render.cropMode === "blur", videoHeight, "framed")
+      : frameFilter(crop ? "picture" : "0:v", render.cropMode, videoHeight, "framed"));
   let composed = "framed";
   if (top || bottom || reaction) {
     // Canvas with the video in its slot, then each banner scaled to fit its strip and laid over it.
@@ -340,6 +385,14 @@ export async function renderShort(input: MediaInput, render: ShortRender, outPat
   // The reaction video plays on repeat in its strip; the output is cut at the Short's own length (`-t` below).
   const looped: string[] = [];
   let audio = ["-map", "0:a:0?"];
+  // The Short's own sound, with its voice pitched if asked: played faster/slower, then stretched back to its length.
+  let voice = "0:a:0";
+  const pitch = render.pitch ?? 1;
+  if (pitch !== 1 && render.sourceHasAudio) {
+    filter += `;[0:a:0]aresample=44100,asetrate=${Math.round(44100 * pitch)},aresample=44100,atempo=${(1 / pitch).toFixed(5)}[voice]`;
+    voice = "voice";
+    audio = ["-map", "[voice]"];
+  }
   if (reaction) {
     looped.push("-stream_loop", "-1", "-i", reaction.path);
     const n = images.length / 2 + 1;
@@ -353,12 +406,21 @@ export async function renderShort(input: MediaInput, render: ShortRender, outPat
     if (reaction.sound) {
       // Its sound loops with its picture. Mixed at full level under a limiter, so two loud tracks can't clip.
       if (render.sourceHasAudio) {
-        filter += `;[0:a:0][${n}:a:0]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=false[a]`;
+        filter += `;[${voice}][${n}:a:0]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95:level=false[a]`;
         audio = ["-map", "[a]"];
       } else {
         audio = ["-map", `${n}:a:0`];
       }
     }
+  }
+
+  // The app's text boxes, drawn by the browser, go over everything.
+  const layered: string[] = [];
+  if (render.overlay) {
+    layered.push("-i", render.overlay);
+    const n = images.length / 2 + (reaction ? 1 : 0) + 1;
+    filter += `;[${composed}][${n}:v]overlay=0:0:format=auto[withtext]`;
+    composed = "withtext";
   }
 
   // The label ("Part 3") is centred on the point the user dragged it to, kept clear of the frame's edges.
@@ -378,11 +440,33 @@ export async function renderShort(input: MediaInput, render: ShortRender, outPat
     [
       "-v", "error", "-y",
       "-ss", render.startSec.toFixed(2), "-t", render.durationSec.toFixed(2), "-i", input.url,
-      ...images, ...looped,
+      ...images, ...looped, ...layered,
       "-filter_complex", filter, "-map", "[v]", ...audio,
       ...(reaction ? ["-t", render.durationSec.toFixed(2)] : []),
       ...encoderArgs(render.encoder ?? "libx264", render.quality), "-r", "30",
       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+      "-movflags", "+faststart", "-f", "mp4", outPath,
+    ],
+    10 * 60_000,
+  );
+  if (signal) throw new MediaToolError(`ffmpeg killed by ${signal}: ${stderr.slice(-300)}`);
+  if (code !== 0) throw new MediaToolError(`ffmpeg exited ${code}: ${stderr.slice(-500)}`);
+}
+
+/**
+ * `startSec`…`endSec` of a finished Short, cut to the exact frame (the picture
+ * is encoded again; a stream copy could only cut at keyframes).
+ */
+export async function trimVideo(input: MediaInput, outPath: string, startSec: number, endSec: number, encoder: VideoEncoder = "libx264"): Promise<void> {
+  if (!ffmpegPath) throw new MediaToolError("ffmpeg binary not available on this platform.");
+  const { code, signal, stderr } = await run(
+    ffmpegPath,
+    [
+      "-v", "error", "-y",
+      "-ss", startSec.toFixed(3), "-i", input.url, "-t", (endSec - startSec).toFixed(3),
+      "-map", "0:v:0", "-map", "0:a:0?",
+      ...encoderArgs(encoder, "max"), "-r", "30",
+      "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
       "-movflags", "+faststart", "-f", "mp4", outPath,
     ],
     10 * 60_000,
