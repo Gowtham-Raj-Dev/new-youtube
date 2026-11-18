@@ -391,6 +391,29 @@ export async function renderShort(input: MediaInput, render: ShortRender, outPat
   if (code !== 0) throw new MediaToolError(`ffmpeg exited ${code}: ${stderr.slice(-500)}`);
 }
 
+/**
+ * The same Short with its voice pitched by `pitch` (1.2 = higher, 0.85 = deeper)
+ * and its length unchanged; the picture is copied as it is, so this takes
+ * seconds. `pitch` 1 writes an untouched copy.
+ */
+export async function changeVoicePitch(input: MediaInput, outPath: string, pitch: number): Promise<void> {
+  if (!ffmpegPath) throw new MediaToolError("ffmpeg binary not available on this platform.");
+  const rate = 44_100;
+  const args =
+    pitch === 1
+      ? ["-v", "error", "-y", "-i", input.url, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-f", "mp4", outPath]
+      : [
+          "-v", "error", "-y", "-i", input.url, "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy",
+          // Played faster/slower to move the pitch, then stretched back to its own length.
+          "-af", `aresample=${rate},asetrate=${Math.round(rate * pitch)},aresample=${rate},atempo=${(1 / pitch).toFixed(5)}`,
+          "-c:a", "aac", "-b:a", "128k", "-ar", String(rate), "-ac", "2",
+          "-movflags", "+faststart", "-f", "mp4", outPath,
+        ];
+  const { code, signal, stderr } = await run(ffmpegPath, args, 5 * 60_000);
+  if (signal) throw new MediaToolError(`ffmpeg killed by ${signal}: ${stderr.slice(-300)}`);
+  if (code !== 0) throw new MediaToolError(`ffmpeg exited ${code}: ${stderr.slice(-500)}`);
+}
+
 /** One JPEG frame at `atSec`, 640px wide; null if it can't be decoded. Input seeking keeps this to a few range reads. */
 export async function grabFrameJpeg(input: MediaInput, atSec: number): Promise<Buffer | null> {
   if (!ffmpegPath) throw new MediaToolError("ffmpeg binary not available on this platform.");

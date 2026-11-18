@@ -1,8 +1,8 @@
 "use client";
 
 /* eslint-disable @next/next/no-img-element -- Storage download URLs in a static export */
-import { Check, Clapperboard } from "lucide-react";
-import { formatDuration, type ShortDoc, type ShortStatus } from "@shortflow/shared";
+import { Check, Clapperboard, Mic } from "lucide-react";
+import { VOICE_PRESETS, formatDuration, type ShortDoc, type ShortStatus } from "@shortflow/shared";
 import type { WithId } from "@/lib/firebase/hooks";
 import { isBlockedOnYouTube } from "@/lib/shorts";
 import { useStorageUrl } from "@/lib/videos";
@@ -104,6 +104,12 @@ export function ShortCard({
           >
             <Check className="size-3.5" strokeWidth={3} />
           </button>
+        )}
+        {short.voice && (
+          <span className="pointer-events-none absolute bottom-2.5 left-2.5 flex items-center gap-1 rounded-md bg-black/70 px-1.5 py-0.5 text-[11px] text-white backdrop-blur">
+            <Mic className="size-3" />
+            {VOICE_PRESETS.find((p) => p.id === short.voice?.preset)?.label ?? "Custom voice"}
+          </span>
         )}
         <span className="pointer-events-none absolute bottom-2.5 right-2.5 rounded-md bg-black/70 px-1.5 py-0.5 font-mono text-[11px] text-white backdrop-blur">
           {formatDuration(short.durationSec)}

@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { CalendarClock, Clapperboard, Download, FolderUp, ListPlus, ShieldCheck, Shuffle, Trash2, Undo2, Upload } from "lucide-react";
-import { DEFAULT_SETTINGS, directUploadVideoId, slotRulesFrom, type ShortDoc } from "@shortflow/shared";
+import { CalendarClock, Clapperboard, Download, FolderUp, ListPlus, Mic, ShieldCheck, Shuffle, Trash2, Undo2, Upload } from "lucide-react";
+import { DEFAULT_SETTINGS, directUploadVideoId, slotRulesFrom, type ShortDoc, type ShortVoice } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useChannelBanners, useChannelShorts, useChannelWork, useChannels } from "@/components/providers/channel-provider";
 import { ChannelTabs } from "@/components/layout/channel-tabs";
@@ -21,6 +21,9 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ShortCard, ShortCardSkeleton } from "@/components/short/short-card";
 import { ShortEditorDialog } from "@/components/short/short-editor";
 import { ShortImportDialog, type ShortImportLook } from "@/components/short/short-import-dialog";
+import { VoiceDialog } from "@/components/short/voice-dialog";
+import { canChangeVoice, setVoices, type VoiceProgress } from "@/lib/voice";
+import { HelperOfflineError } from "@/lib/local-splitter";
 import { cn } from "@/lib/cn";
 
 const FILTERS: Array<{ id: ShortFilter; label: string }> = [
@@ -134,6 +137,29 @@ export default function GeneratedShortsPage() {
   const toClear = ticked.length > 0 ? ticked : ordered.filter((s) => matchesShortFilter(s, filter));
   const [clearing, setClearing] = useState<WithId<ShortDoc>[] | null>(null);
   const [clearBusy, setClearBusy] = useState(false);
+
+  // Change voice works on the ticked Shorts whose file is still here and that aren't going up right now.
+  const toVoice = ticked.filter(canChangeVoice);
+  const [voicing, setVoicing] = useState<WithId<ShortDoc>[] | null>(null);
+  const [voiceProgress, setVoiceProgress] = useState<VoiceProgress | null>(null);
+
+  async function changeVoices(list: WithId<ShortDoc>[], voice: ShortVoice | null) {
+    setBanner(null);
+    setVoiceProgress({ index: 0, total: list.length });
+    try {
+      const { done, failed, firstError } = await setVoices(list, voice, setVoiceProgress);
+      const what = voice ? "New voice on" : "Original voice back on";
+      setBanner(
+        failed === 0
+          ? { tone: "success", message: `${what} ${done === 1 ? "1 Short" : `${done} Shorts`}.` }
+          : { tone: "error", message: `${what} ${done} of ${list.length} Shorts. ${failed} failed: ${firstError instanceof Error ? firstError.message : "try again"}` },
+      );
+      setSelected(new Set());
+    } catch (err) {
+      setBanner({ tone: "error", message: err instanceof HelperOfflineError ? "The PC helper isn't running. Start it (npm run dev, or ShortFlowHelper.exe) and try again." : err instanceof Error ? err.message : "Couldn't change the voice." });
+    }
+    setVoiceProgress(null);
+  }
 
   const fileInput = useRef<HTMLInputElement>(null);
   // Adding Shorts from files runs app-wide, so it carries on if the user opens another page.
@@ -308,6 +334,15 @@ export default function GeneratedShortsPage() {
               )}
               <Button variant="secondary" icon={<Shuffle className="size-4" />} disabled={shorts.length < 2 || busy} onClick={shuffleAll}>
                 {places ? "Shuffle again" : "Shuffle"}
+              </Button>
+              <Button
+                variant="secondary"
+                icon={<Mic className={cn("size-4", voiceProgress && "animate-pulse")} />}
+                disabled={toVoice.length === 0 || voiceProgress !== null}
+                title={toVoice.length === 0 ? "Tick the Shorts whose voice you want to change" : undefined}
+                onClick={() => setVoicing(toVoice)}
+              >
+                {voiceProgress ? `Changing voice ${voiceProgress.index + 1} / ${voiceProgress.total}` : toVoice.length > 0 ? `Change voice · ${toVoice.length}` : "Change voice"}
               </Button>
               <Button variant="secondary" icon={<Download className="size-4" />} loading={downloading} disabled={toDownload.length === 0} onClick={download}>
                 {picked.length > 0 ? `Download ${toDownload.length}` : `Download all ${toDownload.length}`}
@@ -515,6 +550,18 @@ export default function GeneratedShortsPage() {
           onStart={(look) => {
             setPendingFiles(null);
             importFiles(pendingFiles, look);
+          }}
+        />
+      )}
+
+      {voicing && (
+        <VoiceDialog
+          shorts={voicing}
+          onCancel={() => setVoicing(null)}
+          onStart={(voice) => {
+            const list = voicing;
+            setVoicing(null);
+            void changeVoices(list, voice);
           }}
         />
       )}

@@ -217,7 +217,33 @@ export interface ShortDoc {
   fileDeletedAt?: TimestampLike | null;
   /** The channel it was made on (its video's channel), so it shows only there. Absent on ones made before channels were kept apart. */
   connectionId?: string | null;
+  /**
+   * Set while its voice is changed (on the user's PC): the preset and pitch used.
+   * The untouched file is then kept beside it as original.mp4 (storagePaths.shortOriginal).
+   * Null or absent: the Short has its own voice.
+   */
+  voice?: ShortVoice | null;
 }
+
+export interface ShortVoice {
+  /** One of VOICE_PRESETS' ids, or "custom". */
+  preset: string;
+  /** 0.6–1.6; above 1 is higher, below 1 deeper. */
+  pitch: number;
+}
+
+/** Ready-made voice changes for Shorts; the pitch slider covers everything in between. */
+export const VOICE_PRESETS = [
+  { id: "original", label: "Original", pitch: 1, hint: "The Short's own voice." },
+  { id: "bit-higher", label: "Slightly higher", pitch: 1.07, hint: "A small lift — sounds like a different person." },
+  { id: "female", label: "Female / high", pitch: 1.18, hint: "A man's voice comes out lighter, closer to a woman's." },
+  { id: "kid", label: "Kid", pitch: 1.3, hint: "Small and bright, like a child." },
+  { id: "bit-deeper", label: "Slightly deeper", pitch: 0.94, hint: "A small drop — a little heavier." },
+  { id: "deep", label: "Deep / male", pitch: 0.84, hint: "A woman's voice comes out deeper, closer to a man's." },
+] as const;
+
+export const VOICE_PITCH_MIN = 0.6;
+export const VOICE_PITCH_MAX = 1.6;
 
 /**
  * - `live`: playable, nothing restricting it.

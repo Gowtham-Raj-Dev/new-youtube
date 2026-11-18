@@ -34,7 +34,7 @@ import {
   type TailMode,
 } from "@shortflow/shared";
 import { InstagramError, clearSession, hasSession, listProfile, loginState, pipeInstagramFile, readLink, rememberAdded, saveSession, startLogin } from "./instagram";
-import { detectCrop, detectEncoder, grabFrameJpeg, probeMedia, renderShort, type BannerImage, type CropRect, type ReactionVideo } from "../lib/media";
+import { changeVoicePitch, detectCrop, detectEncoder, grabFrameJpeg, probeMedia, renderShort, type BannerImage, type CropRect, type ReactionVideo } from "../lib/media";
 
 /** SHORTFLOW_PORT is for trying a second helper beside a running one; the app always looks on 4777. */
 const PORT = Number(process.env.SHORTFLOW_PORT) || 4777;
@@ -358,6 +358,30 @@ async function startWrap(req: IncomingMessage, res: ServerResponse, query: URLSe
   send(res, 200, { jobId: id });
 }
 
+/**
+ * A Short's voice pitched up or down, sent straight back as the response. The
+ * app sends the Short's Storage URL and the pitch (0.6–1.6; 1 = an untouched copy).
+ */
+async function changeVoice(req: IncomingMessage, res: ServerResponse) {
+  const { url, pitch } = await readJson(req);
+  if (!isAllowedSource(url) || typeof pitch !== "number" || !(pitch >= 0.6 && pitch <= 1.6)) {
+    console.warn("Refused a voice request:", { url: String(url).slice(0, 60), pitch });
+    return send(res, 400, { error: "Bad request." });
+  }
+  const dir = join(tmpdir(), "shortflow-helper", randomUUID());
+  await mkdir(dir, { recursive: true });
+  const out = join(dir, "voice.mp4");
+  try {
+    console.log(pitch === 1 ? "copying a Short's original voice" : `changing a Short's voice (pitch ×${pitch})`);
+    await changeVoicePitch({ url }, out, pitch);
+    const info = await stat(out);
+    res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": info.size });
+    await pipeline(createReadStream(out), res);
+  } finally {
+    void rm(dir, { recursive: true, force: true });
+  }
+}
+
 /** Remembered per file, so reopening a video's preview doesn't measure it again. */
 const frames = new Map<string, Promise<{ width: number; height: number; crop: CropRect | null } | null>>();
 
@@ -439,6 +463,7 @@ const server = createServer((req, res) => {
       if (req.method === "POST" && path === "/split") return startSplit(req, res);
       if (req.method === "POST" && path === "/wrap") return startWrap(req, res, searchParams);
       if (req.method === "POST" && path === "/frame") return measureFrame(req, res);
+      if (req.method === "POST" && path === "/voice") return changeVoice(req, res);
       if (req.method === "POST" && path === "/reactions") return saveReaction(req, res);
       if (path.startsWith("/instagram/")) return instagram(req, res, path, searchParams);
       const reactionId = /^\/reactions\/([\w-]+)$/.exec(path)?.[1];

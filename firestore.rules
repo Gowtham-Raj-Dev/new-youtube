@@ -249,6 +249,16 @@ service cloud.firestore {
         && changedKeys().hasOnly(['title', 'description', 'tags', 'privacy', 'categoryId'])
         && isYoutubeMetadata(incoming());
 
+      // Voice changed on the user's PC (the file itself is swapped in Storage). Keep in sync with VOICE_PITCH_MIN/MAX.
+      allow update: if ownsExisting()
+        && resource.data.status in ['ready', 'scheduled', 'failed', 'quota_exceeded']
+        && changedKeys().hasOnly(['voice'])
+        && (incoming().voice == null
+          || (incoming().voice is map
+            && incoming().voice.keys().hasOnly(['preset', 'pitch'])
+            && incoming().voice.preset is string && incoming().voice.preset.size() > 0 && incoming().voice.preset.size() <= 20
+            && incoming().voice.pitch is number && incoming().voice.pitch >= 0.6 && incoming().voice.pitch <= 1.6));
+
       allow delete: if false;
     }
 

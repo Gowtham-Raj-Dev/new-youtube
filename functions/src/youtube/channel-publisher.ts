@@ -217,6 +217,14 @@ export async function settleSchedule(
       .file(short.storagePath)
       .delete({ ignoreNotFound: true })
       .then(() => true, (error) => (logger.warn("Couldn't delete uploaded Short's file", { shortId: ref.id, error: String(error) }), false));
+    // A Short whose voice was changed also kept its untouched file; it isn't needed any more either.
+    if (short.voice) {
+      await getStorage()
+        .bucket()
+        .file(short.storagePath.replace(/video\.mp4$/, "original.mp4"))
+        .delete({ ignoreNotFound: true })
+        .catch((error) => logger.warn("Couldn't delete uploaded Short's original file", { shortId: ref.id, error: String(error) }));
+    }
     batch.update(shortRef, {
       status: "published",
       youtubeVideoId,
