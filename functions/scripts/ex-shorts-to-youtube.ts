@@ -64,7 +64,7 @@ async function upload(yt: string, file: string, part: Part, publishAt: number): 
     headers: { Authorization: `Bearer ${yt}`, "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": "video/mp4", "X-Upload-Content-Length": String(part.size) },
     body: JSON.stringify({
       snippet: { title: part.title, description: part.description, tags: part.tags, categoryId: "27", defaultLanguage: "ta", defaultAudioLanguage: "ta" },
-      status: { privacyStatus: "private", publishAt: new Date(publishAt).toISOString(), selfDeclaredMadeForKids: false, embeddable: true },
+      status: { privacyStatus: "private", publishAt: new Date(publishAt).toISOString(), selfDeclaredMadeForKids: false, containsSyntheticMedia: false, embeddable: true },
     }),
   });
   if (!start.ok) {

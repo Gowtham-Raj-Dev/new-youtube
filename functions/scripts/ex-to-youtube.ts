@@ -129,8 +129,8 @@ async function main() {
     body: JSON.stringify({
       snippet: { title, description, tags, categoryId: "27", defaultLanguage: "ta", defaultAudioLanguage: "ta" },
       status: unlisted
-        ? { privacyStatus: "unlisted", selfDeclaredMadeForKids: false, embeddable: true }
-        : { privacyStatus: "private", publishAt: new Date(publishAt).toISOString(), selfDeclaredMadeForKids: false, embeddable: true },
+        ? { privacyStatus: "unlisted", selfDeclaredMadeForKids: false, containsSyntheticMedia: false, embeddable: true }
+        : { privacyStatus: "private", publishAt: new Date(publishAt).toISOString(), selfDeclaredMadeForKids: false, containsSyntheticMedia: false, embeddable: true },
     }),
   });
   if (!start.ok) throw new Error(`Upload start: ${start.status} ${(await start.text()).slice(0, 300)}`);

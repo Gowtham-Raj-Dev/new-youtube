@@ -109,6 +109,17 @@ export async function unqueueShort(shortId: string) {
 }
 
 /**
+ * A queued Short, uploaded now: `now` goes public straight away; `youtube` goes up
+ * Private with its slot as YouTube's own schedule, so YouTube makes it public then.
+ */
+export async function publishQueued(shortId: string, mode: "now" | "youtube") {
+  const { data } = await httpsCallable<{ shortId: string; mode: "now" | "youtube" }, { youtubeVideoId: string; youtubeAt: number | null }>(firebase().functions, "publishQueued", {
+    timeout: 540_000,
+  })({ shortId, mode });
+  return data;
+}
+
+/**
  * Saves each Short's MP4 to the user's downloads folder. The files are stored
  * with an `attachment` disposition, so opening the URL downloads instead of playing.
  */

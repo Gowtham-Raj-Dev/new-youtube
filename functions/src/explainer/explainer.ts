@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createCanvas, GlobalFonts, loadImage, type Canvas, type Image, type SKRSContext2D } from "@napi-rs/canvas";
 import { clamp01, easeInOut, easeOut, easeOutBack, INK, talkEnvelope } from "../auto/cartoon";
-import { calmMusic } from "../auto/music";
+import { calmMusic, lofiMusic, pulseMusic } from "../auto/music";
 import { loadFonts, run } from "../auto/render";
 import { sfxTrack, type SfxEvent } from "../auto/sfx";
 
@@ -41,6 +41,8 @@ export interface Frame {
   progress: boolean;
   /** A label at the top, e.g. the Short's part number. */
   tag?: string;
+  /** A small line above the tag, e.g. the alcohol health warning on every Short. */
+  note?: string;
 }
 
 /** The full video, 16:9. */
@@ -87,6 +89,10 @@ let F: Frame = WIDE;
 let CLEAN = false;
 /** The video being painted asked for the story look. */
 let STORY = false;
+/** The video being painted asked for the pulse look. */
+let PULSE = false;
+/** The feed look: the pulse look's drawing, in the feed's colours and moves. */
+let FEED = false;
 const FPS = 30;
 const RATE = 24_000;
 export const HANDLE = "@ulagamippo";
@@ -129,7 +135,13 @@ export type Overlay =
   /** The time machine: spinning rings and streaks. */
   | { kind: "warp"; text: string }
   /** A comment being typed. */
-  | { kind: "comment"; text: string };
+  | { kind: "comment"; text: string }
+  /** Steps joined by arrows, appearing one after another (pulse look). */
+  | { kind: "flow"; items: string[] }
+  /** A gauge sliding from `from` to `to` (0–1), going red as it drops (pulse look). */
+  | { kind: "meter"; label: string; from: number; to: number; small?: string }
+  /** A health warning card (pulse look). */
+  | { kind: "warning"; text: string; small?: string };
 
 /** What the host does while he says a line. */
 export type Action =
@@ -179,7 +191,18 @@ export interface ExVideo {
    * of bouncy pops, no ink outlines, a warm vignette, a drawn ship on routes.
    * Implies the clean look. Same host, same voice.
    */
-  look?: "story";
+  /**
+   * "pulse" (from video 07, the user's ask: a different, eye-catching look, 5+ min):
+   * the picture in a rounded screen on a dark moving backdrop, pictures sliding in,
+   * solid teal/coral chips, colour-wipe chapter cards, word-by-word subtitles.
+   * Implies the clean look. Same host, same voice.
+   * "feed" (video 08 on): the pulse look made into a phone feed — lime, pink and
+   * violet on a deep night blue, pictures swiping up, chapters dropping in as a
+   * notification, lists stacking up like notifications.
+   */
+  look?: "story" | "pulse" | "feed";
+  /** The music bed: "calm" (default), "pulse" (a light beat) or "lofi" (slow, warm keys and a lazy beat). */
+  music?: "calm" | "pulse" | "lofi";
   /** A Short of its own (9:16, 1080×1920), not a long video cut into parts. */
   tall?: boolean;
   /** A "Top N" video: chapter cards count down (big 3, 2, 1) instead of "அத்தியாயம் N". */
@@ -246,7 +269,7 @@ const STAMP_HIT = 0.25;
 
 /** When each item of a list overlay pops in. */
 function listTimes(l: Timed): number[] {
-  if (l.overlay?.kind !== "list") return [];
+  if (l.overlay?.kind !== "list" && l.overlay?.kind !== "flow") return [];
   const count = l.overlay.items.length;
   const step = Math.max(0.35, Math.min(0.9, ((l.end - l.start) * 0.6) / count));
   return l.overlay.items.map((_, i) => l.start + 0.25 + i * step);
@@ -314,6 +337,9 @@ export function build(video: ExVideo, voices: Record<number, Buffer>): Built {
     if (o.kind === "route") sfx.push({ at: s + 0.3, kind: "whoosh" });
     if (o.kind === "warp") sfx.push({ at: s + 0.05, kind: "whoosh" }, { at: s + 0.9, kind: "whoosh" });
     if (o.kind === "comment") sfx.push({ at: l.end - 0.4, kind: "pop" });
+    if (o.kind === "flow") listTimes(l).forEach((at) => sfx.push({ at, kind: "whoosh" }));
+    if (o.kind === "meter") sfx.push({ at: s + 0.2, kind: "whoosh" });
+    if (o.kind === "warning") sfx.push({ at: s + 0.2, kind: "thud" });
   }
   return { video, lines, voice, sfx, duration, chapters };
 }
@@ -1213,8 +1239,618 @@ function drawStoryOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
   return true;
 }
 
+// ─── The pulse look (video 07 on) ─────────────────────────────────────────────
+
+// The pulse look's colours; the feed look (video 08 on) reuses its drawing in its own colours.
+let P_BG = "#0E1117";
+let TEAL = "#2EE6C9";
+let CORAL = "#FF5A5F";
+const SNOW = "#F7F7F2";
+const AMBER = "#FFC24B";
+/** The dark of the backgrounds as "r,g,b", for see-through shades of it. */
+let INKRGB = "14,17,23";
+/** The accent (teal / lime) and the hot colour (coral / pink) as "r,g,b". */
+let ACCRGB = "46,230,201";
+let HOTRGB = "255,90,95";
+let DARK_CHIP = "rgba(14,17,23,0.9)";
+const shade = (a: number) => `rgba(${INKRGB},${a})`;
+
+/** Sets the colours for the pulse look, or the feed look's lime, pink and violet night. */
+function usePalette(feed: boolean) {
+  P_BG = feed ? "#0D0A1F" : "#0E1117";
+  TEAL = feed ? "#C6F432" : "#2EE6C9";
+  CORAL = feed ? "#FF3E8A" : "#FF5A5F";
+  INKRGB = feed ? "13,10,31" : "14,17,23";
+  ACCRGB = feed ? "198,244,50" : "46,230,201";
+  HOTRGB = feed ? "255,62,138" : "255,90,95";
+  DARK_CHIP = shade(0.9);
+}
+
+/** The rounded screen the pictures play in. */
+function pulseCard() {
+  return F.h > F.w ? { x: 36, y: 200, w: F.w - 72, h: F.h - 620, r: 40 } : { x: 48, y: 96, w: F.w - 96, h: 812, r: 36 };
+}
+
+/** A pop-in with a little overshoot, `delay` s in, over `len` s. */
+const popIn = (local: number, delay = 0, len = 0.45) => easeOutBack((local - delay) / len);
+
+/** A solid rounded box, with a soft drop shadow unless `shadow` is false. */
+function chip(ctx: SKRSContext2D, x: number, y: number, w: number, h: number, r: number, fill: string, shadow = true) {
+  ctx.save();
+  if (shadow) {
+    ctx.shadowColor = "rgba(0,0,0,0.45)";
+    ctx.shadowBlur = 24;
+    ctx.shadowOffsetY = 8;
+  }
+  ctx.fillStyle = fill;
+  ctx.beginPath();
+  ctx.roundRect(x, y, Math.max(0, w), h, Math.min(r, Math.max(0, w) / 2));
+  ctx.fill();
+  ctx.restore();
+}
+
+/** A pill of text centred at (x, y), scaled by `p`. */
+function tag(ctx: SKRSContext2D, text: string, x: number, y: number, p: number, fill = TEAL, ink = P_BG, size = 40) {
+  if (p <= 0) return;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(p, p);
+  ctx.font = `${size}px ${TB}`;
+  const w = Math.min(1100, ctx.measureText(text).width) + size * 1.3;
+  chip(ctx, -w / 2, -size * 0.85, w, size * 1.7, size * 0.85, fill);
+  ctx.fillStyle = ink;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, 0, 3, 1100);
+  ctx.restore();
+}
+
+/** Text on a solid box sized to it (at most 1080 wide), centred at (x, y); returns the box's width. */
+function boxText(ctx: SKRSContext2D, text: string, x: number, y: number, size: number, fill: string, ink: string): number {
+  ctx.font = `${size}px ${TB}`;
+  const fit = Math.min(1, 920 / ctx.measureText(text).width);
+  const tw = ctx.measureText(text).width * fit;
+  const w = tw + size * 1.1;
+  const h = size * 1.55 * Math.max(0.75, fit);
+  chip(ctx, x - w / 2, y - h / 2, w, h, 24, fill);
+  ctx.save();
+  ctx.translate(x, y + 4);
+  ctx.scale(fit, fit);
+  ctx.fillStyle = ink;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
+  return w;
+}
+
+/** The dark backdrop around the screen: two slow colour glows drifting and a faint dot grid. */
+function drawPulseBackdrop(ctx: SKRSContext2D, t: number) {
+  ctx.fillStyle = P_BG;
+  ctx.fillRect(0, 0, F.w, F.h);
+  const glow = (x: number, y: number, r: number, colour: string) => {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, colour);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, F.w, F.h);
+  };
+  if (FEED) {
+    // A violet and a pink glow, and faint posts scrolling up and up, like a feed that never ends.
+    glow(F.w * (0.15 + 0.08 * Math.sin(t * 0.21)), F.h * (0.2 + 0.1 * Math.cos(t * 0.17)), F.w * 0.65, "rgba(140,108,255,0.3)");
+    glow(F.w * (0.88 + 0.06 * Math.cos(t * 0.19)), F.h * (0.85 + 0.08 * Math.sin(t * 0.23)), F.w * 0.55, `rgba(${HOTRGB},0.2)`);
+    const colW = F.h > F.w ? F.w * 0.42 : F.w * 0.2;
+    const postH = colW * 1.25;
+    const cols = Math.ceil(F.w / (colW + 40)) + 1;
+    for (let c = 0; c < cols; c++) {
+      const x = c * (colW + 40) - colW * 0.3;
+      const scroll = (t * (36 + 10 * (c % 3)) + c * postH * 0.45) % (postH + 40);
+      for (let y = -scroll; y < F.h; y += postH + 40) {
+        ctx.fillStyle = "rgba(255,255,255,0.035)";
+        ctx.beginPath();
+        ctx.roundRect(x, y, colW, postH, 26);
+        ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.05)";
+        ctx.beginPath();
+        ctx.arc(x + 34, y + 34, 16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillRect(x + 62, y + 26, colW * 0.4, 8);
+        ctx.fillRect(x + 62, y + 42, colW * 0.25, 6);
+      }
+    }
+    return;
+  }
+  glow(F.w * (0.18 + 0.08 * Math.sin(t * 0.21)), F.h * (0.22 + 0.1 * Math.cos(t * 0.17)), F.w * 0.6, `rgba(${ACCRGB},0.22)`);
+  glow(F.w * (0.86 + 0.06 * Math.cos(t * 0.19)), F.h * (0.82 + 0.08 * Math.sin(t * 0.23)), F.w * 0.55, `rgba(${HOTRGB},0.2)`);
+  ctx.fillStyle = "rgba(255,255,255,0.07)";
+  for (let y = 24; y < F.h; y += 48) for (let x = 24; x < F.w; x += 48) ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+}
+
+/** A picture inside the screen, slowly moving, shifted `dx` sideways (or `dy` up, in the feed look) while it slides in or out. */
+function drawPulsePicture(ctx: SKRSContext2D, pic: Picture | undefined, key: string, p: number, index: number, dx: number, dy = 0) {
+  const c = pulseCard();
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(c.x, c.y, c.w, c.h, c.r);
+  ctx.clip();
+  ctx.translate(dx, dy);
+  if (!pic) {
+    const g = ctx.createLinearGradient(c.x, c.y, c.x + c.w, c.y + c.h);
+    g.addColorStop(0, "#123a3a");
+    g.addColorStop(1, "#4a1d2a");
+    ctx.fillStyle = g;
+    ctx.fillRect(c.x, c.y, c.w, c.h);
+    ctx.fillStyle = "rgba(255,255,255,0.3)";
+    ctx.font = `60px ${TS}`;
+    ctx.textAlign = "center";
+    ctx.fillText(key, c.x + c.w / 2, c.y + 120);
+    ctx.restore();
+    return;
+  }
+  const { img } = pic;
+  if (!pic.portrait) {
+    const zoom = 1.03 + 0.08 * (index % 2 ? p : 1 - p);
+    const s = Math.max(c.w / img.width, c.h / img.height) * zoom;
+    const w = img.width * s;
+    const h = img.height * s;
+    const dir = index % 3 === 0 ? 1 : index % 3 === 1 ? -1 : 0;
+    ctx.drawImage(img, c.x + (c.w - w) / 2 + dir * (w - c.w) * 0.4 * (p - 0.5), c.y + (c.h - h) / 2 - (index % 2 ? 1 : -1) * (h - c.h) * 0.3 * (p - 0.5), w, h);
+  } else {
+    // A portrait: blurred behind, the picture itself on a white rounded card.
+    const bs = Math.max(c.w / 48, c.h / 27) * 1.1;
+    ctx.drawImage(pic.blur, c.x + (c.w - 48 * bs) / 2, c.y + (c.h - 27 * bs) / 2, 48 * bs, 27 * bs);
+    ctx.fillStyle = shade(0.35);
+    ctx.fillRect(c.x, c.y, c.w, c.h);
+    const s = Math.min((c.h - 90) / img.height, F.photo.maxW / img.width) * (1 + 0.04 * p);
+    const w = img.width * s;
+    const h = img.height * s;
+    const px = F.photo.x;
+    const py = c.y + c.h / 2;
+    chip(ctx, px - w / 2 - 12, py - h / 2 - 12, w + 24, h + 24, 22, SNOW);
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(px - w / 2, py - h / 2, w, h, 14);
+    ctx.clip();
+    ctx.drawImage(img, px - w / 2, py - h / 2, w, h);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/** A line's overlay in the pulse look; false for kinds it leaves to the classic look. */
+function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, cy: number): boolean {
+  const o = l.overlay!;
+  const local = t - l.start;
+  const out = clamp01((l.end + 0.4 - t) / 0.3);
+  if (!["title", "year", "list", "pin", "type", "morph", "stamp", "flow", "meter", "warning"].includes(o.kind)) return false;
+  if (out <= 0 || local < 0) return true;
+  ctx.save();
+  ctx.globalAlpha = out;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  switch (o.kind) {
+    case "title": {
+      if (o.small) tag(ctx, o.small, cx, cy - 122, popIn(local, 0, 0.4));
+      // A coral marker sweeping across, the words popping up on it one by one.
+      ctx.font = `104px ${TB}`;
+      const words = o.text.split(" ");
+      const widths = words.map((w) => ctx.measureText(w).width);
+      const space = ctx.measureText(" ").width;
+      const total = widths.reduce((a, b) => a + b, 0) + space * (words.length - 1);
+      const fit = Math.min(1, 960 / total);
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(fit, fit);
+      const u = easeOut(clamp01((local - 0.05) / 0.4));
+      chip(ctx, -total / 2 - 40, -72, (total + 80) * u, 144, 26, CORAL);
+      let x = -total / 2;
+      words.forEach((w, i) => {
+        const p = popIn(local, 0.15 + i * 0.09, 0.4);
+        if (p > 0) {
+          ctx.save();
+          ctx.globalAlpha = out * clamp01(p * 2);
+          ctx.translate(x + widths[i] / 2, 6);
+          ctx.scale(0.7 + 0.3 * p, 0.7 + 0.3 * p);
+          ctx.fillStyle = SNOW;
+          ctx.fillText(w, 0, 0);
+          ctx.restore();
+        }
+        x += widths[i] + space;
+      });
+      ctx.restore();
+      break;
+    }
+    case "year": {
+      if (o.label) tag(ctx, o.label, cx, cy - 145, popIn(local, 0, 0.4), SNOW, P_BG);
+      const c = easeOut(clamp01((local - 0.15) / YEAR_COUNT));
+      const fmt = (n: number) => `${o.prefix ?? ""}${o.value >= 10_000 ? n.toLocaleString("en-IN") : String(n)}${o.suffix ?? ""}`;
+      ctx.font = `170px ${TB}`;
+      const full = ctx.measureText(fmt(o.value)).width;
+      const fit = Math.min(1, 900 / full);
+      ctx.save();
+      ctx.globalAlpha = out * rise(local, 0.05, 0.3);
+      ctx.translate(cx, cy + 25);
+      ctx.scale(fit, fit);
+      chip(ctx, -full / 2 - 60, -110, full + 120, 220, 34, DARK_CHIP);
+      ctx.shadowColor = `rgba(${ACCRGB},0.5)`;
+      ctx.shadowBlur = 40;
+      ctx.fillStyle = TEAL;
+      ctx.fillText(fmt(Math.round(o.value * c)), 0, 0);
+      ctx.restore();
+      const u = rise(local, 0.2, 1.0);
+      chip(ctx, cx - 210 * u, cy + 125, 420 * u, 12, 6, CORAL, false);
+      break;
+    }
+    case "list": {
+      const times = listTimes(l);
+      if (FEED) {
+        // Each item drops in as a notification: a round icon with its number, the words, "இப்போ" on the right.
+        ctx.font = `50px ${TB}`;
+        const w = Math.max(...o.items.map((it) => ctx.measureText(it).width)) + 300;
+        const fit = Math.min(1, 1180 / w);
+        const n = o.items.length;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.scale(fit, fit);
+        o.items.forEach((item, i) => {
+          const p = easeOutBack(clamp01((t - times[i]) / 0.45));
+          if (p <= 0) return;
+          const y = (i - (n - 1) / 2) * 112 - 40 * (1 - p);
+          const x = -w / 2;
+          const lit = i === n - 1 && t > times[i] + 0.4;
+          ctx.save();
+          ctx.globalAlpha = out * clamp01(p * 2);
+          chip(ctx, x, y - 46, w, 92, 30, "rgba(28,22,56,0.95)");
+          if (lit) {
+            ctx.strokeStyle = CORAL;
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.roundRect(x, y - 46, w, 92, 30);
+            ctx.stroke();
+          }
+          const g = ctx.createLinearGradient(x + 16, y - 30, x + 76, y + 30);
+          g.addColorStop(0, "#8C6CFF");
+          g.addColorStop(1, CORAL);
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(x + 52, y, 30, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = SNOW;
+          ctx.font = `34px ${TB}`;
+          ctx.textAlign = "center";
+          ctx.fillText(String(i + 1), x + 52, y + 3);
+          ctx.textAlign = "left";
+          ctx.font = `50px ${TB}`;
+          ctx.fillStyle = lit ? TEAL : SNOW;
+          ctx.fillText(item, x + 104, y + 3);
+          ctx.textAlign = "right";
+          ctx.font = `30px ${TB}`;
+          ctx.fillStyle = "rgba(247,247,242,0.45)";
+          ctx.fillText("இப்போ", x + w - 30, y + 3);
+          ctx.restore();
+        });
+        ctx.restore();
+        break;
+      }
+      ctx.font = `50px ${TB}`;
+      const w = Math.max(...o.items.map((it) => ctx.measureText(it).width)) + 140;
+      const fit = Math.min(1, 1080 / w);
+      const n = o.items.length;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(fit, fit);
+      o.items.forEach((item, i) => {
+        const p = rise(t - times[i], 0, 0.4);
+        if (p <= 0) return;
+        const y = (i - (n - 1) / 2) * 104;
+        const x = -w / 2 - 50 * (1 - p);
+        const lit = i === n - 1 && t > times[i] + 0.4;
+        ctx.save();
+        ctx.globalAlpha = out * p;
+        chip(ctx, x, y - 42, w, 84, 22, lit ? CORAL : DARK_CHIP);
+        chip(ctx, x + 12, y - 30, 60, 60, 16, lit ? SNOW : TEAL, false);
+        ctx.fillStyle = P_BG;
+        ctx.font = `36px ${TB}`;
+        ctx.textAlign = "center";
+        ctx.fillText(String(i + 1), x + 42, y + 3);
+        ctx.fillStyle = SNOW;
+        ctx.font = `50px ${TB}`;
+        ctx.textAlign = "left";
+        ctx.fillText(item, x + 98, y + 3);
+        ctx.restore();
+      });
+      ctx.restore();
+      break;
+    }
+    case "flow": {
+      // Boxes left to right, an arrow drawing itself towards each next one.
+      const times = listTimes(l);
+      ctx.font = `50px ${TB}`;
+      const ws = o.items.map((it) => ctx.measureText(it).width + 76);
+      const gap = 96;
+      const total = ws.reduce((a, b) => a + b, 0) + gap * (ws.length - 1);
+      const fit = Math.min(1, 1120 / total);
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(fit, fit);
+      let x = -total / 2;
+      o.items.forEach((item, i) => {
+        const p = popIn(t - times[i], 0, 0.4);
+        const last = i === o.items.length - 1;
+        if (p > 0) {
+          ctx.save();
+          ctx.globalAlpha = out * clamp01(p * 2);
+          ctx.translate(x + ws[i] / 2, 0);
+          ctx.scale(0.8 + 0.2 * p, 0.8 + 0.2 * p);
+          chip(ctx, -ws[i] / 2, -52, ws[i], 104, 26, last ? CORAL : i === 0 ? TEAL : DARK_CHIP);
+          ctx.fillStyle = i === 0 && !last ? P_BG : SNOW;
+          ctx.font = `50px ${TB}`;
+          ctx.textAlign = "center";
+          ctx.fillText(item, 0, 5);
+          ctx.restore();
+        }
+        x += ws[i];
+        if (!last) {
+          const q = rise(t - times[i + 1], -0.3, 0.3);
+          if (q > 0) {
+            const x0 = x + 16;
+            const x1 = x0 + (gap - 32) * q;
+            ctx.save();
+            ctx.globalAlpha = out * q;
+            ctx.strokeStyle = TEAL;
+            ctx.fillStyle = TEAL;
+            ctx.lineWidth = 9;
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            ctx.moveTo(x0, 0);
+            ctx.lineTo(x1 - 14, 0);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(x1, 0);
+            ctx.lineTo(x1 - 22, -18);
+            ctx.lineTo(x1 - 22, 18);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+          }
+          x += gap;
+        }
+      });
+      ctx.restore();
+      break;
+    }
+    case "meter": {
+      tag(ctx, o.label, cx, cy - 125, popIn(local, 0, 0.4), SNOW, P_BG, 42);
+      const W = 900;
+      const H = 64;
+      const v = o.from + (o.to - o.from) * easeInOut(clamp01((local - 0.5) / Math.max(1.2, (l.end - l.start) * 0.5)));
+      ctx.save();
+      ctx.globalAlpha = out * rise(local, 0.1, 0.4);
+      chip(ctx, cx - W / 2 - 14, cy - H / 2 - 14, W + 28, H + 28, 26, DARK_CHIP);
+      chip(ctx, cx - W / 2, cy - H / 2, W * v, H, 18, v > 0.5 ? TEAL : v > 0.32 ? AMBER : CORAL, false);
+      ctx.fillStyle = shade(0.45);
+      for (let k = 1; k < 10; k++) ctx.fillRect(cx - W / 2 + (W * k) / 10 - 1.5, cy - H / 2, 3, H);
+      ctx.restore();
+      if (o.small) tag(ctx, o.small, cx, cy + 112, popIn(local, 0.5, 0.4), DARK_CHIP, SNOW, 40);
+      break;
+    }
+    case "warning": {
+      // An amber-edged card that breathes, a hazard band along its top, a warning sign beside the words.
+      const p = popIn(local, 0, 0.5);
+      const W = 1060;
+      const H = o.small ? 340 : 260;
+      const breathe = 0.5 + 0.5 * Math.sin(local * 4);
+      ctx.save();
+      ctx.globalAlpha = out * clamp01(p * 2);
+      ctx.translate(cx, cy);
+      ctx.scale(0.85 + 0.15 * p, 0.85 + 0.15 * p);
+      ctx.save();
+      ctx.shadowColor = `rgba(255,194,75,${0.3 + 0.35 * breathe})`;
+      ctx.shadowBlur = 60;
+      chip(ctx, -W / 2, -H / 2, W, H, 28, shade(0.95), false);
+      ctx.restore();
+      ctx.save();
+      ctx.beginPath();
+      ctx.roundRect(-W / 2, -H / 2, W, H, 28);
+      ctx.clip();
+      ctx.fillStyle = AMBER;
+      ctx.fillRect(-W / 2, -H / 2, W, 40);
+      ctx.fillStyle = P_BG;
+      const slide = (local * 60) % 60;
+      for (let x = -W / 2 - 60 + slide; x < W / 2 + 60; x += 60) {
+        ctx.beginPath();
+        ctx.moveTo(x, -H / 2);
+        ctx.lineTo(x + 28, -H / 2);
+        ctx.lineTo(x + 8, -H / 2 + 40);
+        ctx.lineTo(x - 20, -H / 2 + 40);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+      ctx.strokeStyle = AMBER;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.roundRect(-W / 2, -H / 2, W, H, 28);
+      ctx.stroke();
+      // The sign.
+      const sx = -W / 2 + 120;
+      const sy = 22;
+      ctx.fillStyle = AMBER;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - 70);
+      ctx.lineTo(sx + 74, sy + 58);
+      ctx.lineTo(sx - 74, sy + 58);
+      ctx.closePath();
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 16;
+      ctx.strokeStyle = AMBER;
+      ctx.stroke();
+      ctx.fill();
+      ctx.fillStyle = P_BG;
+      ctx.fillRect(sx - 7, sy - 32, 14, 54);
+      ctx.beginPath();
+      ctx.arc(sx, sy + 38, 9, 0, Math.PI * 2);
+      ctx.fill();
+      fitText(ctx, o.text, 70, o.small ? -10 : 22, 70, W - 300, SNOW, TB);
+      if (o.small) fitText(ctx, o.small, 70, 92, 44, W - 300, AMBER, TB);
+      ctx.restore();
+      break;
+    }
+    case "pin": {
+      const p = popIn(local, 0.05, 0.45);
+      ctx.font = `66px ${TB}`;
+      const tw = ctx.measureText(o.text).width;
+      ctx.font = `40px ${TB}`;
+      const sw = o.small ? ctx.measureText(o.small).width : 0;
+      const w = Math.max(tw, sw) + 170;
+      const h = o.small ? 184 : 126;
+      ctx.save();
+      ctx.globalAlpha = out * clamp01(p * 2);
+      ctx.translate(cx, cy);
+      ctx.scale(0.8 + 0.2 * p, 0.8 + 0.2 * p);
+      chip(ctx, -w / 2, -h / 2, w, h, 28, DARK_CHIP);
+      const mx = -w / 2 + 72;
+      ctx.fillStyle = CORAL;
+      ctx.beginPath();
+      ctx.arc(mx, -14, 28, Math.PI * 0.85, Math.PI * 2.15);
+      ctx.lineTo(mx, 40);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = SNOW;
+      ctx.beginPath();
+      ctx.arc(mx, -14, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.textAlign = "left";
+      ctx.font = `66px ${TB}`;
+      ctx.fillStyle = SNOW;
+      ctx.fillText(o.text, mx + 60, o.small ? -26 : 4);
+      if (o.small) {
+        ctx.font = `40px ${TB}`;
+        ctx.fillStyle = TEAL;
+        ctx.fillText(o.small, mx + 60, 48);
+      }
+      ctx.restore();
+      break;
+    }
+    case "type": {
+      const gs = graphemes(o.text);
+      const shown = Math.floor(gs.length * clamp01((local - 0.15) / Math.max(1, Math.min(2.2, gs.length * 0.07))));
+      ctx.font = `80px ${TB}`;
+      const full = ctx.measureText(o.text).width;
+      const fit = Math.min(1, 900 / full);
+      const p = rise(local, 0, 0.35);
+      ctx.save();
+      ctx.globalAlpha = out * p;
+      ctx.translate(cx, cy + 20 * (1 - p));
+      ctx.scale(fit, fit);
+      chip(ctx, -full / 2 - 64, -78, full + 128, 156, 26, DARK_CHIP);
+      chip(ctx, -full / 2 - 64, -78, 14, 156, 7, TEAL, false);
+      const part = gs.slice(0, shown).join("");
+      ctx.textAlign = "left";
+      ctx.fillStyle = SNOW;
+      ctx.fillText(part, -full / 2, 6);
+      if (Math.floor(local * 2.2) % 2 === 0 || shown < gs.length) {
+        ctx.fillStyle = TEAL;
+        ctx.fillRect(-full / 2 + ctx.measureText(part).width + 10, -40, 7, 80);
+      }
+      ctx.restore();
+      break;
+    }
+    case "morph": {
+      // The first words get struck through in coral and drop away; the answer pops up in teal.
+      const at = morphAt(l) - l.start;
+      const a = rise(local, 0, 0.35) * (1 - rise(local, at, 0.35));
+      const strike = easeOut(clamp01((local - (at - 0.5)) / 0.35));
+      if (a > 0) {
+        ctx.save();
+        ctx.globalAlpha = out * a;
+        ctx.translate(0, 30 * rise(local, at, 0.35));
+        const w = boxText(ctx, o.from, cx, cy, 92, DARK_CHIP, SNOW);
+        chip(ctx, cx - w / 2 + 30, cy - 5, (w - 60) * strike, 12, 6, CORAL, false);
+        ctx.restore();
+      }
+      const b = popIn(local, at, 0.45);
+      if (b > 0) {
+        ctx.save();
+        ctx.globalAlpha = out * clamp01(b * 2);
+        ctx.translate(cx, cy);
+        ctx.scale(0.8 + 0.2 * b, 0.8 + 0.2 * b);
+        boxText(ctx, o.to, 0, 0, 92, TEAL, P_BG);
+        ctx.restore();
+      }
+      break;
+    }
+    case "stamp": {
+      // A coral sticker slapped on, a little tilted.
+      const p = clamp01(local / 0.28);
+      const sc = 1.5 - 0.5 * easeOut(p);
+      ctx.save();
+      ctx.globalAlpha = out * clamp01(p * 3);
+      ctx.translate(cx, cy);
+      ctx.rotate(-0.05);
+      ctx.scale(sc, sc);
+      boxText(ctx, o.text, 0, 0, 108, CORAL, SNOW);
+      ctx.restore();
+      if (o.small) tag(ctx, o.small, cx, cy + 130, popIn(local, 0.3, 0.4), DARK_CHIP, SNOW, 40);
+      break;
+    }
+  }
+  ctx.restore();
+  return true;
+}
+
+/** The subtitle in the pulse look: a dark bar, each word lighting up teal as it is said. */
+function drawPulseSubtitle(ctx: SKRSContext2D, sub: { text: string; from: number; to: number }, t: number, cx: number, maxW: number) {
+  ctx.font = `${F.subSize}px ${TB}`;
+  ctx.textBaseline = "middle";
+  const words = sub.text.split(" ");
+  const space = ctx.measureText(" ").width;
+  const widths = words.map((w) => ctx.measureText(w).width);
+  const rows: number[][] = [[]];
+  let rowW = 0;
+  words.forEach((_, i) => {
+    const add = (rows[rows.length - 1].length ? space : 0) + widths[i];
+    if (rowW + add > maxW && rows[rows.length - 1].length) {
+      rows.push([i]);
+      rowW = widths[i];
+    } else {
+      rows[rows.length - 1].push(i);
+      rowW += add;
+    }
+  });
+  const rowWidth = (r: number[]) => r.reduce((s, i) => s + widths[i], 0) + space * (r.length - 1);
+  const letters = words.reduce((s, w) => s + w.length, 0);
+  let acc = 0;
+  const starts = words.map((w) => {
+    const at = sub.from + ((sub.to - sub.from) * acc) / letters;
+    acc += w.length;
+    return at;
+  });
+  let current = -1;
+  starts.forEach((s, i) => {
+    if (t >= s) current = i;
+  });
+  if (t > sub.to) current = words.length;
+  const rowH = F.subSize * 1.3;
+  const barW = Math.max(...rows.map(rowWidth)) + 64;
+  const barH = rows.length * rowH + 26;
+  const bottom = F.subY + rowH / 2 + 13;
+  chip(ctx, cx - barW / 2, bottom - barH, barW, barH, 22, shade(0.8));
+  rows.forEach((r, ri) => {
+    let x = cx - rowWidth(r) / 2;
+    const y = bottom - barH + 13 + rowH * (ri + 0.5) + 3;
+    for (const i of r) {
+      ctx.textAlign = "left";
+      ctx.fillStyle = i === current ? TEAL : i < current ? SNOW : "rgba(247,247,242,0.55)";
+      ctx.fillText(words[i], x, y);
+      x += widths[i] + space;
+    }
+  });
+}
+
 function drawOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, cy: number) {
   if (STORY && drawStoryOverlay(ctx, l, t, cx, cy)) return;
+  if (PULSE && drawPulseOverlay(ctx, l, t, cx, cy)) return;
   const o = l.overlay!;
   const local = t - l.start;
   const dur = l.end - l.start;
@@ -1710,7 +2346,7 @@ function drawConfetti(ctx: SKRSContext2D, seed: number, local: number) {
 }
 
 /** A line's subtitle in pieces of a few words, each shown for its share of the line. */
-function subtitleAt(lines: Timed[], t: number): { text: string; line: Timed } | null {
+function subtitleAt(lines: Timed[], t: number): { text: string; line: Timed; from: number; to: number } | null {
   const line = lines.find((l) => t >= l.start - 0.05 && t < l.end + 0.25);
   if (!line) return null;
   const words = (line.sub ?? line.tamil).split(/\s+/);
@@ -1729,10 +2365,11 @@ function subtitleAt(lines: Timed[], t: number): { text: string; line: Timed } | 
   let at = line.start;
   for (const c of chunks) {
     const end = at + ((line.end - line.start) * c.length) / total;
-    if (t < end) return { text: c, line };
+    if (t < end) return { text: c, line, from: at, to: end };
     at = end;
   }
-  return { text: chunks[chunks.length - 1], line };
+  const last = chunks[chunks.length - 1];
+  return { text: last, line, from: line.end - ((line.end - line.start) * last.length) / total, to: line.end };
 }
 
 function drawSubtitle(ctx: SKRSContext2D, text: string, cx: number, maxW: number) {
@@ -1766,7 +2403,10 @@ function drawSubtitle(ctx: SKRSContext2D, text: string, cx: number, maxW: number
 export async function framePainter(b: Built, height: number, frame: Frame = WIDE) {
   F = frame;
   STORY = b.video.look === "story";
-  CLEAN = !!b.video.clean || STORY;
+  FEED = b.video.look === "feed";
+  PULSE = b.video.look === "pulse" || FEED;
+  usePalette(FEED);
+  CLEAN = !!b.video.clean || STORY || PULSE;
   loadTamilFonts();
   const pictures = await loadPictures(b.video);
   const host = await loadHost();
@@ -1825,23 +2465,72 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
     ctx.save();
     if (quake) ctx.translate(quake * Math.sin(t * 90), quake * Math.cos(t * 70));
 
-    // The pictures, crossfading over 0.7 s (1.2 s in the story look).
-    const XF = STORY ? 1.2 : 0.7;
+    // The pictures, crossfading over 0.7 s (1.2 s in the story look; sliding in, in the pulse look).
+    const XF = STORY ? 1.2 : PULSE ? 0.55 : 0.7;
     const si = Math.max(0, stretches.findIndex((s) => t >= s.from && t < s.to));
     const st = stretches[si];
     const prog = (s: (typeof stretches)[number]) => clamp01((t - s.from + XF) / (s.to - s.from + 2 * XF));
-    drawPicture(ctx, pictures[st.key], st.key, prog(st), si);
-    const fadeIn = clamp01((t - st.from) / XF);
-    if (si > 0 && fadeIn < 1) {
+    if (PULSE) {
+      drawPulseBackdrop(ctx, t);
+      const c = pulseCard();
+      const u = si > 0 ? easeInOut(clamp01((t - st.from) / XF)) : 1;
+      // Pulse slides the next picture in from the right; the feed swipes it up from below, like a Short.
+      if (FEED) {
+        if (u < 1) drawPulsePicture(ctx, pictures[stretches[si - 1].key], stretches[si - 1].key, prog(stretches[si - 1]), si - 1, 0, -u * c.h);
+        drawPulsePicture(ctx, pictures[st.key], st.key, prog(st), si, 0, (1 - u) * c.h);
+      } else {
+        if (u < 1) drawPulsePicture(ctx, pictures[stretches[si - 1].key], stretches[si - 1].key, prog(stretches[si - 1]), si - 1, -u * c.w);
+        drawPulsePicture(ctx, pictures[st.key], st.key, prog(st), si, (1 - u) * c.w);
+      }
       ctx.save();
-      ctx.globalAlpha = 1 - easeInOut(fadeIn);
-      drawPicture(ctx, pictures[stretches[si - 1].key], stretches[si - 1].key, prog(stretches[si - 1]), si - 1);
+      ctx.beginPath();
+      ctx.roundRect(c.x, c.y, c.w, c.h, c.r);
+      ctx.clip();
+      // The seam of a slide: a teal bar (a lime one across, in the feed).
+      if (u < 1) {
+        ctx.fillStyle = TEAL;
+        if (FEED) ctx.fillRect(c.x, c.y + (1 - u) * c.h - 5, c.w, 10);
+        else ctx.fillRect(c.x + (1 - u) * c.w - 7, c.y, 14, c.h);
+      }
+      // A little darker for the text on top, more towards the bottom.
+      ctx.fillStyle = shade(0.26);
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      const low = ctx.createLinearGradient(0, c.y + c.h * 0.55, 0, c.y + c.h);
+      low.addColorStop(0, shade(0));
+      low.addColorStop(1, shade(0.55));
+      ctx.fillStyle = low;
+      ctx.fillRect(c.x, c.y, c.w, c.h);
       ctx.restore();
+      if (FEED) {
+        // The screen's edge glows violet into pink.
+        const edge = ctx.createLinearGradient(c.x, c.y, c.x + c.w, c.y + c.h);
+        edge.addColorStop(0, "rgba(140,108,255,0.9)");
+        edge.addColorStop(1, `rgba(${HOTRGB},0.9)`);
+        ctx.strokeStyle = edge;
+        ctx.lineWidth = 4;
+      } else {
+        ctx.strokeStyle = `rgba(${ACCRGB},0.55)`;
+        ctx.lineWidth = 3;
+      }
+      ctx.beginPath();
+      ctx.roundRect(c.x, c.y, c.w, c.h, c.r);
+      ctx.stroke();
+    } else {
+      drawPicture(ctx, pictures[st.key], st.key, prog(st), si);
+      const fadeIn = clamp01((t - st.from) / XF);
+      if (si > 0 && fadeIn < 1) {
+        ctx.save();
+        ctx.globalAlpha = 1 - easeInOut(fadeIn);
+        drawPicture(ctx, pictures[stretches[si - 1].key], stretches[si - 1].key, prog(stretches[si - 1]), si - 1);
+        ctx.restore();
+      }
     }
     ctx.restore();
-    // Darker at the bottom for the subtitles, and a little all over for the text.
-    ctx.fillStyle = STORY ? "rgba(6,14,34,0.3)" : "rgba(8,10,24,0.28)";
-    ctx.fillRect(0, 0, F.w, F.h);
+    // Darker at the bottom for the subtitles, and a little all over for the text (the pulse look darkens its screen itself).
+    if (!PULSE) {
+      ctx.fillStyle = STORY ? "rgba(6,14,34,0.3)" : "rgba(8,10,24,0.28)";
+      ctx.fillRect(0, 0, F.w, F.h);
+    }
     if (STORY) {
       // A soft vignette, like an old film.
       const vg = ctx.createRadialGradient(F.w / 2, F.h * 0.45, Math.min(F.w, F.h) * 0.35, F.w / 2, F.h * 0.45, Math.max(F.w, F.h) * 0.72);
@@ -1850,11 +2539,13 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       ctx.fillStyle = vg;
       ctx.fillRect(0, 0, F.w, F.h);
     }
-    const shade = ctx.createLinearGradient(0, F.shadeFrom, 0, F.h);
-    shade.addColorStop(0, "rgba(8,10,24,0)");
-    shade.addColorStop(1, "rgba(8,10,24,0.85)");
-    ctx.fillStyle = shade;
-    ctx.fillRect(0, F.shadeFrom, F.w, F.h - F.shadeFrom);
+    if (!PULSE) {
+      const shade = ctx.createLinearGradient(0, F.shadeFrom, 0, F.h);
+      shade.addColorStop(0, "rgba(8,10,24,0)");
+      shade.addColorStop(1, "rgba(8,10,24,0.85)");
+      ctx.fillStyle = shade;
+      ctx.fillRect(0, F.shadeFrom, F.w, F.h - F.shadeFrom);
+    }
 
     const mode = hostMode(t);
     const areaX = F.areaX[0] + (F.areaX[1] - F.areaX[0]) * easeInOut(mode);
@@ -1863,7 +2554,120 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
     const ch = chapterOf(t);
     const chLine = ch && b.lines.find((l) => l.chapterNo === ch.no)!;
     const cardT = chLine ? t - (chLine.start - CHAPTER_GAP) : 99;
-    if (ch && STORY && cardT < CHAPTER_GAP + 0.4) {
+    const num = ch ? String(rankOf(ch.no)).padStart(2, "0") : "";
+    if (ch && FEED && cardT < CHAPTER_GAP + 0.4) {
+      // A notification drops in over the dimmed screen: the app's icon with the chapter number, the chapter as its message.
+      const inP = easeOutBack(clamp01(cardT / 0.5));
+      const outP = easeInOut(clamp01((cardT - CHAPTER_GAP) / 0.4));
+      ctx.save();
+      ctx.globalAlpha = clamp01(cardT / 0.3) * (1 - outP);
+      ctx.fillStyle = shade(0.6);
+      ctx.fillRect(0, 0, F.w, F.h);
+      ctx.restore();
+      const W = Math.min(F.w - 80, 1320);
+      const H = 290;
+      const x = (F.w - W) / 2;
+      const y = F.chapterY - H / 2 + (-F.chapterY - H) * (1 - inP) - (F.chapterY + H) * outP;
+      ctx.save();
+      ctx.shadowColor = "rgba(140,108,255,0.45)";
+      ctx.shadowBlur = 60;
+      chip(ctx, x, y, W, H, 46, "rgba(28,22,56,0.97)", false);
+      ctx.restore();
+      ctx.strokeStyle = "rgba(255,255,255,0.12)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(x, y, W, H, 46);
+      ctx.stroke();
+      // The icon.
+      const icon = ctx.createLinearGradient(x + 40, y + 40, x + 210, y + 210);
+      icon.addColorStop(0, "#8C6CFF");
+      icon.addColorStop(1, CORAL);
+      ctx.fillStyle = icon;
+      ctx.beginPath();
+      ctx.roundRect(x + 40, y + 60, 170, 170, 40);
+      ctx.fill();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = SNOW;
+      ctx.font = `96px ${TB}`;
+      ctx.fillText(num, x + 125, y + 150);
+      // The header: who it is from, and when.
+      ctx.textAlign = "left";
+      ctx.font = `38px ${TB}`;
+      ctx.fillStyle = "rgba(247,247,242,0.6)";
+      ctx.fillText(`உலகம் இப்போ · இப்போ`, x + 250, y + 78);
+      ctx.textAlign = "right";
+      ctx.fillStyle = TEAL;
+      ctx.fillText(b.video.countdown ? `நம்பர் ${rankOf(ch.no)}` : `அத்தியாயம் ${num}`, x + W - 44, y + 78);
+      // The message.
+      ctx.textAlign = "left";
+      ctx.font = `92px ${TB}`;
+      const room = W - 250 - 44;
+      const fit = Math.min(1, room / ctx.measureText(ch.name).width);
+      ctx.save();
+      ctx.translate(x + 250, y + 180);
+      ctx.scale(fit, fit);
+      ctx.fillStyle = SNOW;
+      ctx.fillText(ch.name, 0, 0);
+      ctx.restore();
+    } else if (ch && PULSE && cardT < CHAPTER_GAP + 0.4) {
+      // A teal panel wipes across from the left, the chapter on it, and wipes off to the right.
+      const inU = easeInOut(clamp01(cardT / 0.4));
+      const outU = easeInOut(clamp01((cardT - CHAPTER_GAP) / 0.4));
+      const x0 = F.w * outU;
+      const x1 = F.w * inU;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x0, 0, x1 - x0, F.h);
+      ctx.clip();
+      ctx.fillStyle = TEAL;
+      ctx.fillRect(0, 0, F.w, F.h);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      // The number, huge and faint behind.
+      ctx.font = `560px ${TB}`;
+      ctx.fillStyle = shade(0.1);
+      ctx.fillText(num, areaX + 40 * (1 - rise(cardT, 0, 1.6)), F.chapterY);
+      const p = rise(cardT, 0.25, 0.5);
+      ctx.globalAlpha = p;
+      ctx.font = `50px ${TB}`;
+      ctx.fillStyle = P_BG;
+      ctx.fillText(b.video.countdown ? `நம்பர் ${rankOf(ch.no)}` : `அத்தியாயம் ${num}`, areaX, F.chapterY - 130 + 20 * (1 - p));
+      ctx.font = `130px ${TB}`;
+      const fit = Math.min(1, Math.min(1400, F.w - 140) / ctx.measureText(ch.name).width);
+      ctx.save();
+      ctx.translate(areaX, F.chapterY + 10 + 20 * (1 - p));
+      ctx.scale(fit, fit);
+      ctx.fillText(ch.name, 0, 0);
+      ctx.restore();
+      const u = rise(cardT, 0.45, 0.6);
+      ctx.fillStyle = CORAL;
+      ctx.fillRect(areaX - 260 * u, F.chapterY + 115, 520 * u, 12);
+      ctx.restore();
+      // A coral edge leading the wipe in, and trailing it out.
+      ctx.fillStyle = CORAL;
+      if (inU > 0 && inU < 1) ctx.fillRect(x1 - 16, 0, 16, F.h);
+      if (outU > 0 && outU < 1) ctx.fillRect(x0, 0, 16, F.h);
+    } else if (ch && PULSE) {
+      const p = easeOut(clamp01((cardT - CHAPTER_GAP - 0.3) / 0.5));
+      ctx.save();
+      ctx.globalAlpha = p;
+      ctx.font = `34px ${TB}`;
+      const w = ctx.measureText(ch.name).width + 112;
+      ctx.translate(48 - 40 * (1 - p), F.h > F.w ? F.badgeY : 22);
+      chip(ctx, 0, 0, w, 58, 16, DARK_CHIP, false);
+      chip(ctx, 0, 0, 66, 58, 16, TEAL, false);
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      ctx.fillStyle = P_BG;
+      ctx.font = `30px ${TB}`;
+      ctx.fillText(num, 33, 31);
+      ctx.textAlign = "left";
+      ctx.fillStyle = SNOW;
+      ctx.font = `34px ${TB}`;
+      ctx.fillText(ch.name, 86, 31);
+      ctx.restore();
+    } else if (ch && STORY && cardT < CHAPTER_GAP + 0.4) {
       // A quiet title card: the number in gold, the name fading up, a line drawing under it.
       const out = clamp01((CHAPTER_GAP + 0.4 - cardT) / 0.4);
       ctx.save();
@@ -1984,10 +2788,22 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
     }
 
     const sub = subtitleAt(b.lines, t);
-    if (sub) drawSubtitle(ctx, sub.text, areaX, mode > 0.5 ? F.subW[1] : F.subW[0]);
+    if (sub && PULSE) drawPulseSubtitle(ctx, sub, t, areaX, mode > 0.5 ? F.subW[1] : F.subW[0]);
+    else if (sub) drawSubtitle(ctx, sub.text, areaX, mode > 0.5 ? F.subW[1] : F.subW[0]);
 
-    // How far along the video is, along the top edge.
-    if (F.progress) {
+    // How far along the video is, along the top edge (in the pulse look, in segments, one per chapter).
+    if (F.progress && PULSE) {
+      const marks = [0, ...b.chapters.slice(1).map((c) => c.at / b.duration), 1];
+      const done = t / b.duration;
+      for (let k = 0; k + 1 < marks.length; k++) {
+        const a = marks[k] * F.w + (k ? 4 : 0);
+        const z = marks[k + 1] * F.w - (k + 2 < marks.length ? 4 : 0);
+        ctx.fillStyle = "rgba(255,255,255,0.16)";
+        ctx.fillRect(a, 0, z - a, 6);
+        ctx.fillStyle = TEAL;
+        ctx.fillRect(a, 0, Math.max(0, Math.min(z, done * F.w) - a), 6);
+      }
+    } else if (F.progress) {
       const ph = STORY ? 5 : 8;
       ctx.fillStyle = "rgba(255,255,255,0.18)";
       ctx.fillRect(0, 0, F.w, ph);
@@ -2002,6 +2818,18 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       ctx.fillText(HANDLE, F.w - 36, F.handleY);
     }
     if (F.tag) pill(ctx, F.tag, F.w / 2, 170, 36, YELLOW, INK);
+    if (F.note) {
+      ctx.font = `28px ${TB}`;
+      const w = ctx.measureText(F.note).width + 40;
+      ctx.fillStyle = shade(0.85);
+      ctx.beginPath();
+      ctx.roundRect(F.w / 2 - w / 2, 92, w, 44, 22);
+      ctx.fill();
+      ctx.fillStyle = "#FFFFFF";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(F.note, F.w / 2, 115);
+    }
 
     const fade = Math.max(1 - Math.min(1, t / 0.6), clamp01((t - (b.duration - 0.8)) / 0.8));
     if (fade > 0) {
@@ -2041,7 +2869,7 @@ export async function renderExplainer(b: Built, outPath: string, workDir: string
   const musicPath = join(workDir, "music.wav");
   const sfxPath = join(workDir, "sfx.wav");
   await writeFile(voicePath, voiceWav);
-  await writeFile(musicPath, calmMusic(b.duration + 0.5, musicSeed));
+  await writeFile(musicPath, (b.video.music === "pulse" ? pulseMusic : b.video.music === "lofi" ? lofiMusic : calmMusic)(b.duration + 0.5, musicSeed));
   await writeFile(sfxPath, sfxTrack(b.duration + 0.5, b.sfx));
 
   const PART = 60 * FPS;
@@ -2055,6 +2883,8 @@ export async function renderExplainer(b: Built, outPath: string, workDir: string
           [
             "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${width}x${height}`, "-r", String(FPS), "-i", "pipe:0",
             "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-profile:v", "high",
+            // Fewer threads and a shorter lookahead: far less memory at 1440p (this PC runs out — "malloc of …" from x264).
+            "-threads", "3", "-rc-lookahead", "20",
             part,
           ],
           async (write) => {
@@ -2066,7 +2896,9 @@ export async function renderExplainer(b: Built, outPath: string, workDir: string
         );
         break;
       } catch (error) {
-        if (attempt >= 3) throw error;
+        if (attempt >= 5) throw error;
+        // Give the memory a moment to free up before trying again.
+        await new Promise((r) => setTimeout(r, 15_000));
         console.log(`part ${i + 1} failed (${String(error).slice(0, 80)}), making it again`);
       }
     }

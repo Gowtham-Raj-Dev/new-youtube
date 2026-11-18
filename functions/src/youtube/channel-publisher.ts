@@ -35,7 +35,7 @@ export interface ClaimedSchedule {
 }
 
 export type Settlement =
-  | { status: "published"; youtubeVideoId: string; held: boolean }
+  | { status: "published"; youtubeVideoId: string; held: boolean; youtubeAt?: number }
   | { status: "failed" | "quota_exceeded"; message: string }
   | { status: "scheduled"; countAttempt: boolean };
 
@@ -210,8 +210,8 @@ export async function settleSchedule(
   const batch = db.batch();
 
   if (result.status === "published") {
-    const { youtubeVideoId, held } = result;
-    batch.update(ref, { status: "published", youtubeVideoId, errorMessage: null, updatedAt: now });
+    const { youtubeVideoId, held, youtubeAt } = result;
+    batch.update(ref, { status: "published", youtubeVideoId, errorMessage: null, updatedAt: now, ...(youtubeAt ? { youtubeScheduled: true } : {}) });
     const fileDeleted = await getStorage()
       .bucket()
       .file(short.storagePath)
@@ -229,13 +229,22 @@ export async function settleSchedule(
     });
     logActivity(batch, userId, {
       type: "YOUTUBE_UPLOAD_COMPLETED",
-      message: held ? `Uploaded “${short.title}” as Unlisted — checking it for copyright blocks` : `Published “${short.title}” to YouTube`,
+      message: youtubeAt
+        ? `Uploaded “${short.title}” to YouTube — YouTube makes it public at its scheduled time`
+        : held
+          ? `Uploaded “${short.title}” as Unlisted — checking it for copyright blocks`
+          : `Published “${short.title}” to YouTube`,
       refType: "short",
       refId: ref.id,
       connectionId: schedule.connectionId,
     });
     if (prefs.uploads && !held) {
-      notify(batch, userId, { kind: "success", title: "Short published", body: `“${short.title}” is now on YouTube.`, link: channelShortsLink });
+      notify(batch, userId, {
+        kind: "success",
+        title: youtubeAt ? "Short scheduled on YouTube" : "Short published",
+        body: youtubeAt ? `“${short.title}” is on YouTube as Private and goes public at its scheduled time.` : `“${short.title}” is now on YouTube.`,
+        link: channelShortsLink,
+      });
     }
   } else if (result.status === "scheduled") {
     batch.update(ref, { status: "scheduled", updatedAt: now, ...(result.countAttempt ? { retryCount: FieldValue.increment(1) } : {}) });
@@ -265,8 +274,11 @@ export async function settleSchedule(
   await batch.commit();
 }
 
-/** Publishes one scheduled Short within an isolated channel context. */
-export async function publishOneForModel(doc: DocumentSnapshot, context: PublishContext): Promise<PublishOutcome> {
+/**
+ * Publishes one scheduled Short within an isolated channel context.
+ * `youtubeAt`: upload it now as Private and let YouTube make it public at that time.
+ */
+export async function publishOneForModel(doc: DocumentSnapshot, context: PublishContext, youtubeAt?: number): Promise<PublishOutcome> {
   const connectionId = doc.get("connectionId") as string;
   const connection = await context.connectionState(connectionId);
   if (connection === "paused") return "pause_connection";
@@ -292,7 +304,8 @@ export async function publishOneForModel(doc: DocumentSnapshot, context: Publish
     return "skipped";
   }
 
-  const held = heldForCheck(schedule, short, await context.canManage(connectionId));
+  // One YouTube schedules itself isn't held back for a copyright check: YouTube publishes it as it is.
+  const held = !youtubeAt && heldForCheck(schedule, short, await context.canManage(connectionId));
   let youtubeVideoId: string;
   try {
     const accessToken = await getAccessToken(connectionId);
@@ -303,7 +316,14 @@ export async function publishOneForModel(doc: DocumentSnapshot, context: Publish
     }
     youtubeVideoId = await uploadToYouTube(
       accessToken,
-      { title: short.title, description: short.description, tags: short.tags, categoryId: short.categoryId, privacy: held ? "unlisted" : short.privacy },
+      {
+        title: short.title,
+        description: short.description,
+        tags: short.tags,
+        categoryId: short.categoryId,
+        privacy: held ? "unlisted" : short.privacy,
+        ...(youtubeAt ? { publishAt: new Date(youtubeAt).toISOString() } : {}),
+      },
       source,
     );
   } catch (error) {
@@ -338,7 +358,7 @@ export async function publishOneForModel(doc: DocumentSnapshot, context: Publish
   }
 
   logger.info("Uploaded to YouTube", { shortId: doc.id, connectionId, youtubeVideoId });
-  await settleSchedule(claimed, { status: "published", youtubeVideoId, held }, prefs, link);
+  await settleSchedule(claimed, { status: "published", youtubeVideoId, held, youtubeAt }, prefs, link);
   allowance.used++;
   return "published";
 }

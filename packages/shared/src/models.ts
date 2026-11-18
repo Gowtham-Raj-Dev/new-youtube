@@ -247,6 +247,8 @@ export interface ScheduleDoc {
   privacy: PrivacyStatus;
   /** Upload as Unlisted and only go public once it is confirmed to play (no copyright block). */
   safePublish?: boolean;
+  /** Uploaded ahead of time as Private with YouTube's own publishAt: YouTube makes it public at `publishAt`. */
+  youtubeScheduled?: boolean;
   status: ScheduleStatus;
   createdAt: TimestampLike;
   updatedAt: TimestampLike;

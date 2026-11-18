@@ -2,14 +2,14 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { CalendarClock, ExternalLink, Layers, ListX, RefreshCw } from "lucide-react";
+import { CalendarCheck, CalendarClock, ExternalLink, Layers, ListX, RefreshCw, Upload } from "lucide-react";
 import { DEFAULT_SETTINGS, slotRulesFrom, type ScheduleDoc, type ShortDoc } from "@shortflow/shared";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useChannels } from "@/components/providers/channel-provider";
 import { ChannelTabs } from "@/components/layout/channel-tabs";
 import { useChannelSchedules, useChannelSettings, useSchedules, useShorts, type WithId } from "@/lib/firebase/hooks";
 import { rescheduleQueue, scheduleFacts } from "@/lib/schedule";
-import { unqueueShort, youtubeShortUrl } from "@/lib/shorts";
+import { publishQueued, unqueueShort, youtubeShortUrl } from "@/lib/shorts";
 import { friendlyCallableError } from "@/lib/youtube";
 import { formatInZone, toDate } from "@/lib/time";
 import { Alert } from "@/components/ui/alert";
@@ -26,8 +26,11 @@ function QueueRow({
   short,
   timezone,
   withDate,
+  now,
   onError,
 }: {
+  /** When the page opened; a slot must be 15+ minutes after it to schedule on YouTube. */
+  now: number;
   schedule: WithId<ScheduleDoc>;
   short: WithId<ShortDoc> | undefined;
   timezone: string;
@@ -36,8 +39,13 @@ function QueueRow({
   onError: (message: string) => void;
 }) {
   const [removing, setRemoving] = useState(false);
+  const [pushing, setPushing] = useState<"now" | "youtube" | null>(null);
   const at = toDate(schedule.publishAt);
   const removable = schedule.status === "scheduled" || schedule.status === "failed" || schedule.status === "quota_exceeded";
+  const when = at ? formatInZone(at, timezone, {}) : "";
+  // YouTube needs its own schedule time a little ahead.
+  const canYouTubeSchedule = removable && !!at && at.getTime() > now + 15 * 60 * 1000;
+  const busy = removing || pushing !== null;
 
   async function remove() {
     setRemoving(true);
@@ -49,6 +57,22 @@ function QueueRow({
     }
   }
 
+  async function push(mode: "now" | "youtube") {
+    const title = short?.title ?? "this Short";
+    const ask =
+      mode === "now"
+        ? `Upload “${title}” to YouTube now? It goes Public straight away.`
+        : `Upload “${title}” to YouTube now as Private, scheduled there for ${when}? YouTube makes it Public at that time.`;
+    if (!window.confirm(ask)) return;
+    setPushing(mode);
+    try {
+      await publishQueued(schedule.id, mode);
+    } catch (error) {
+      onError(friendlyCallableError(error));
+    }
+    setPushing(null);
+  }
+
   return (
     <li className="flex items-center gap-3.5 px-5 py-3">
       <div className="aspect-[9/16] w-9 shrink-0 overflow-hidden rounded-md border border-line bg-surface-2">{short && <ShortThumbnail short={short} />}</div>
@@ -57,6 +81,8 @@ function QueueRow({
         <p className="mt-0.5 truncate text-[12.5px] text-muted">
           {schedule.errorMessage ? (
             <span className={schedule.status === "failed" ? "text-danger" : "text-warning"}>{schedule.errorMessage}</span>
+          ) : schedule.youtubeScheduled && at ? (
+            <span className="text-accent">Scheduled on YouTube · goes public {formatInZone(at, timezone, {})}</span>
           ) : (
             at && formatInZone(at, timezone, withDate ? {} : { dateStyle: undefined })
           )}
@@ -70,9 +96,37 @@ function QueueRow({
         </a>
       ) : (
         removable && (
-          <Button variant="ghost" size="sm" icon={<ListX className="size-3.5" />} loading={removing} onClick={remove} aria-label="Remove from queue">
-            <span className="hidden sm:inline">Remove</span>
-          </Button>
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<Upload className="size-3.5" />}
+              loading={pushing === "now"}
+              disabled={busy}
+              onClick={() => void push("now")}
+              aria-label="Upload now, Public"
+              title="Upload to YouTube now and make it Public straight away"
+            >
+              <span className="hidden sm:inline">Upload now</span>
+            </Button>
+            {canYouTubeSchedule && (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<CalendarCheck className="size-3.5" />}
+                loading={pushing === "youtube"}
+                disabled={busy}
+                onClick={() => void push("youtube")}
+                aria-label="Upload now, scheduled on YouTube"
+                title={`Upload to YouTube now as Private, scheduled there for ${when}`}
+              >
+                <span className="hidden sm:inline">Schedule on YouTube</span>
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" icon={<ListX className="size-3.5" />} loading={removing} disabled={busy} onClick={remove} aria-label="Remove from queue">
+              <span className="hidden sm:inline">Remove</span>
+            </Button>
+          </>
         )
       )}
     </li>
@@ -236,6 +290,7 @@ export default function UploadQueuePage() {
                           schedule={schedule}
                           short={shortsById.get(schedule.id)}
                           timezone={timezone}
+                          now={now}
                           onError={(message) => setNotice({ tone: "error", message })}
                         />
                       ))}
@@ -257,6 +312,7 @@ export default function UploadQueuePage() {
                     short={shortsById.get(schedule.id)}
                     timezone={timezone}
                     withDate
+                    now={now}
                     onError={(message) => setNotice({ tone: "error", message })}
                   />
                 ))}

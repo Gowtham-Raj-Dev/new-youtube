@@ -4,7 +4,7 @@ export { youtubeConnectStart, youtubeOAuthCallback, youtubeRefreshChannel, youtu
 export { publishDueShorts } from "./youtube/publish";
 export { checkYouTubeStatus } from "./youtube/status";
 export { onSourceVideoUploaded } from "./videos/source-uploaded";
-export { queueShorts, rescheduleQueue, unqueueShort } from "./schedule/functions";
+export { publishQueued, queueShorts, rescheduleQueue, unqueueShort } from "./schedule/functions";
 export { deleteVideo } from "./videos/delete-video";
 export { deleteShorts } from "./videos/delete-shorts";
 export { cleanupStaleUploads } from "./videos/cleanup";

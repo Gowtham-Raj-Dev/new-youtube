@@ -5,6 +5,7 @@ import { TOKEN_ENCRYPTION_KEY, YOUTUBE_CLIENT_SECRET } from "../config";
 import { requireUid } from "../lib/auth";
 import { logActivity } from "../lib/activity";
 import { publishNow } from "../youtube/publish";
+import { createPublishContext, publishOneForModel } from "../youtube/channel-publisher";
 
 const MAX_PER_CALL = 50;
 /** Leaves a minute of the call's 9 for the upload in flight to finish; the sweep takes whatever is left. */
@@ -217,6 +218,53 @@ export const rescheduleQueue = onCall<{ connectionId?: string } | undefined>(asy
 
   return { moved: moved.length, firstAt: moved[0] ?? null, lastAt: moved[moved.length - 1] ?? null };
 });
+
+/** YouTube wants a scheduled time comfortably in the future. */
+const YOUTUBE_SCHEDULE_LEAD_MS = 15 * 60 * 1000;
+
+/**
+ * For one Short already in a channel's queue:
+ * - `now`: upload it straight away with its own visibility (normally Public), its slot dropped.
+ * - `youtube`: upload it now as Private with its slot as YouTube's publish time, so YouTube
+ *   itself makes it public then (it shows as scheduled in YouTube Studio).
+ */
+export const publishQueued = onCall<{ shortId?: string; mode?: "now" | "youtube" }>(
+  { secrets: [YOUTUBE_CLIENT_SECRET, TOKEN_ENCRYPTION_KEY], timeoutSeconds: 540, memory: "512MiB" },
+  async (request) => {
+    const userId = requireUid(request.auth);
+    const shortId = request.data?.shortId;
+    const mode = request.data?.mode;
+    if (typeof shortId !== "string" || !shortId || (mode !== "now" && mode !== "youtube")) throw new HttpsError("invalid-argument", "Choose a Short and how to upload it.");
+
+    const db = getFirestore();
+    const ref = db.collection(COLLECTIONS.schedules).doc(shortId);
+    const youtubeAt = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists || snap.get("userId") !== userId) throw new HttpsError("not-found", "That Short isn't in the queue any more.");
+      const status = snap.get("status") as string;
+      if (status === "uploading") throw new HttpsError("failed-precondition", "This Short is uploading to YouTube right now.");
+      if (status === "published") throw new HttpsError("failed-precondition", "This Short is already on YouTube.");
+      const at = (snap.get("publishAt") as Timestamp).toMillis();
+      if (mode === "youtube") {
+        if (at < Date.now() + YOUTUBE_SCHEDULE_LEAD_MS) throw new HttpsError("failed-precondition", "Its slot is less than 15 minutes away. Use Upload now instead.");
+        // A failed one goes back in line so the upload can claim it.
+        if (status === "failed") tx.update(ref, { status: "scheduled", errorMessage: null, updatedAt: FieldValue.serverTimestamp() });
+        return at;
+      }
+      const publishAt = Timestamp.now();
+      tx.update(ref, { status: "scheduled", publishAt, errorMessage: null, updatedAt: FieldValue.serverTimestamp() });
+      tx.update(db.collection(COLLECTIONS.shorts).doc(shortId), { publishAt });
+      return undefined;
+    });
+
+    const outcome = await publishOneForModel(await ref.get(), createPublishContext(), youtubeAt);
+    const after = await ref.get();
+    if (after.get("status") !== "published") {
+      throw new HttpsError("aborted", (after.get("errorMessage") as string | null) ?? (outcome === "pause_connection" ? "This channel is paused. Check the YouTube page." : "It didn't upload this time. Try again in a minute."));
+    }
+    return { youtubeVideoId: after.get("youtubeVideoId") as string, youtubeAt: youtubeAt ?? null };
+  },
+);
 
 /** "Remove from queue": the Short goes back to ready. Not possible mid-upload or once published. */
 export const unqueueShort = onCall<{ shortId?: string }>(async (request) => {

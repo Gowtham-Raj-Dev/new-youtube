@@ -121,8 +121,8 @@ async function main() {
     body: JSON.stringify({
       snippet: { title, description, tags, categoryId, defaultLanguage: "en", defaultAudioLanguage: "en" },
       status: publishAt
-        ? { privacyStatus: "private", publishAt: new Date(publishAt).toISOString(), selfDeclaredMadeForKids: false, embeddable: true }
-        : { privacyStatus: "public", selfDeclaredMadeForKids: false, embeddable: true },
+        ? { privacyStatus: "private", publishAt: new Date(publishAt).toISOString(), selfDeclaredMadeForKids: false, containsSyntheticMedia: false, embeddable: true }
+        : { privacyStatus: "public", selfDeclaredMadeForKids: false, containsSyntheticMedia: false, embeddable: true },
     }),
   });
   if (!start.ok) throw new Error(`Upload start: ${start.status} ${(await start.text()).slice(0, 300)}`);

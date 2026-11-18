@@ -45,8 +45,16 @@ async function main() {
     const s = Math.max(1920 / bg.width, 1080 / bg.height);
     ctx.drawImage(bg, (1920 - bg.width * s) / 2, (1080 - bg.height * s) / 2, bg.width * s, bg.height * s);
     const shade = ctx.createLinearGradient(0, 0, 1920, 0);
-    shade.addColorStop(0, "rgba(8,10,24,0.85)");
-    shade.addColorStop(0.7, "rgba(8,10,24,0.2)");
+    if (v.look === "pulse" || v.look === "feed") {
+      // The pulse and feed looks: the text side nearly solid dark, so the picture's own words never show through.
+      const ink = v.look === "feed" ? "13,10,31" : "14,17,23";
+      shade.addColorStop(0, `rgba(${ink},0.97)`);
+      shade.addColorStop(0.5, `rgba(${ink},0.88)`);
+      shade.addColorStop(0.8, `rgba(${ink},0.25)`);
+    } else {
+      shade.addColorStop(0, "rgba(8,10,24,0.85)");
+      shade.addColorStop(0.7, "rgba(8,10,24,0.2)");
+    }
     ctx.fillStyle = shade;
     ctx.fillRect(0, 0, 1920, 1080);
     const host = await loadImage(join(CHANNEL_DIR, "host", "host.png"));

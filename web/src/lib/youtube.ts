@@ -30,7 +30,7 @@ export const CALLBACK_ERRORS: Record<string, string> = {
 export function friendlyCallableError(error: unknown): string {
   if (error instanceof FirebaseError) {
     const code = error.code.replace("functions/", "");
-    if (["invalid-argument", "failed-precondition", "not-found", "unauthenticated", "unavailable"].includes(code)) {
+    if (["invalid-argument", "failed-precondition", "not-found", "unauthenticated", "unavailable", "aborted"].includes(code)) {
       return error.message;
     }
     if (code === "internal" || code === "unimplemented") {

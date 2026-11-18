@@ -74,7 +74,9 @@ async function main() {
   }
   const lines = all[no - 1];
   const b = buildPart(v, lines, no, all.length);
-  const frame = { ...TALL, tag: `${v.title} · பாகம் ${no}/${all.length}` };
+  // An alcohol video (one with a warning card) carries the health warning on every Short, not only the first.
+  const note = v.lines.some((l) => l.overlay?.kind === "warning") ? "மது அருந்துதல் உடல் நலத்துக்கு கேடு" : undefined;
+  const frame = { ...TALL, tag: `${v.title} · பாகம் ${no}/${all.length}`, note };
   // Without the characters Windows file names can't have (a chapter like "இந்தியாவுக்கு என்ன?").
   const name = `${String(no).padStart(2, "0")} ${lines.find((l) => l.chapter)?.chapter ?? v.title}`.replace(/[?<>:"/\\|*]/g, "").trim();
   console.log(`${name} · ${b.duration.toFixed(1)} s`);

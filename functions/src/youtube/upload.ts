@@ -14,6 +14,8 @@ export interface UploadMetadata {
   tags: string[];
   categoryId: string;
   privacy: PrivacyStatus;
+  /** ISO time: upload as Private now and let YouTube itself make it public then. */
+  publishAt?: string;
 }
 
 /** Any byte source that supports ranged reads (a Storage object, a Buffer in tests). */
@@ -69,9 +71,14 @@ function request(url: string, init: RequestInit): Promise<Response> {
   return fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 }
 
-/** Opens a resumable session and returns its upload URL. Charged to the upload quota. */
-async function startSession(accessToken: string, metadata: UploadMetadata, source: UploadSource): Promise<string> {
-  const res = await request(`${UPLOAD_URL}?uploadType=resumable&part=snippet,status`, {
+/**
+ * Opens a resumable session and returns its upload URL. Charged to the upload quota.
+ * Every upload says: not made for kids, no altered or synthetic content to
+ * disclose, no paid promotion (the channel owner's defaults, 2026-11-16).
+ */
+async function startSession(accessToken: string, metadata: UploadMetadata, source: UploadSource, declarations = true): Promise<string> {
+  const parts = declarations ? "snippet,status,paidProductPlacementDetails" : "snippet,status";
+  const res = await request(`${UPLOAD_URL}?uploadType=resumable&part=${parts}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -87,10 +94,24 @@ async function startSession(accessToken: string, metadata: UploadMetadata, sourc
         tags: fitYoutubeTags(metadata.tags),
         categoryId: metadata.categoryId,
       },
-      status: { privacyStatus: metadata.privacy, selfDeclaredMadeForKids: false },
+      status: {
+        // A video YouTube publishes on its own schedule has to wait as Private.
+        privacyStatus: metadata.publishAt ? "private" : metadata.privacy,
+        ...(metadata.publishAt ? { publishAt: metadata.publishAt } : {}),
+        selfDeclaredMadeForKids: false,
+        ...(declarations ? { containsSyntheticMedia: false } : {}),
+      },
+      ...(declarations ? { paidProductPlacementDetails: { hasPaidProductPlacement: false } } : {}),
     }),
   });
-  if (!res.ok) throw await toUploadError(res);
+  if (!res.ok) {
+    const error = await toUploadError(res);
+    // Should YouTube ever refuse the declaration fields, upload without them rather than not at all.
+    if (declarations && res.status === 400 && /paidProductPlacement|containsSyntheticMedia|part/i.test(`${error.reason} ${error.message}`)) {
+      return startSession(accessToken, metadata, source, false);
+    }
+    throw error;
+  }
 
   const sessionUrl = res.headers.get("location");
   if (!sessionUrl) throw new YouTubeUploadError("transient", "no_session", "YouTube didn't return an upload session.");
