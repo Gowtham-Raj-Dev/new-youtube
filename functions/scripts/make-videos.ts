@@ -18,7 +18,7 @@ import { EPISODES } from "../src/auto/episodes";
 import { renderShort } from "../src/auto/render";
 import { geminiSpeech, narrationFromPcm, silentNarration, splitDialogue } from "../src/auto/voice";
 
-const ROOT = resolve(__dirname, "..", "..", "Moolai Illa Machan", "Shorts");
+const ROOT = resolve(__dirname, "..", "..", "Channels", "Moolai Illa Machan", "Shorts");
 const ENDING = resolve(__dirname, "..", ".local", "ending-laugh-5s.mp4");
 
 async function main() {

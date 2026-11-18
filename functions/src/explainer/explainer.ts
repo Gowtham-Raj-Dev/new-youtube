@@ -107,8 +107,8 @@ export const HOST_VOICE = {
   voiceRate: 1.12,
 };
 
-/** youtube-for-me/Ulagam Ippo — the bundled script runs from functions/.local. */
-export const CHANNEL_DIR = resolve(__dirname, "..", "..", "Ulagam Ippo");
+/** youtube-for-me/Channels/Ulagam Ippo — the bundled script runs from functions/.local. */
+export const CHANNEL_DIR = resolve(__dirname, "..", "..", "Channels", "Ulagam Ippo");
 export const videoDir = (v: ExVideo) => join(CHANNEL_DIR, "Videos", v.slug);
 
 export type Overlay =

@@ -15,7 +15,7 @@ import { join, resolve } from "node:path";
 import { LINES, VOICES, type LongLine } from "../src/longform/amma-oorukku";
 import { geminiSpeech, splitAtLongestPauses, splitAtPauses } from "../src/auto/voice";
 
-const DIR = resolve(__dirname, "..", "..", "Moolai Illa Machan", "Videos", "01 Amma Oorukku Pona Oru Naal", "voice");
+const DIR = resolve(__dirname, "..", "..", "Channels", "Moolai Illa Machan", "Videos", "01 Amma Oorukku Pona Oru Naal", "voice");
 const BYTES_PER_SECOND = 48_000;
 
 /** Lines in the order they are spoken in their take; a take's speakers must alternate. */

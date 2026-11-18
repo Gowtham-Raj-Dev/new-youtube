@@ -17,7 +17,7 @@ import { getStorage } from "firebase-admin/storage";
 import { COLLECTIONS, storagePaths } from "@shortflow/shared";
 
 const PROJECT = "fir-4b5dc";
-const VIDEOS = resolve(__dirname, "..", "..", "Moolai Illa Machan", "Videos");
+const VIDEOS = resolve(__dirname, "..", "..", "Channels", "Moolai Illa Machan", "Videos");
 
 async function main() {
   const args = process.argv.slice(2);

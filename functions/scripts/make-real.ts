@@ -17,7 +17,7 @@ import { renderShort } from "../src/auto/render";
 import { areaMechanic } from "../src/auto/scenes-mechanic";
 import { pattaIdathulaye } from "../src/auto/scenes-real";
 
-const ROOT = resolve(__dirname, "..", "..", "Moolai Illa Machan", "Shorts", "Real Comedy");
+const ROOT = resolve(__dirname, "..", "..", "Channels", "Moolai Illa Machan", "Shorts", "Real Comedy");
 const RATE = 24_000;
 
 interface Clip {

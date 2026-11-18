@@ -14,7 +14,7 @@ import { createCanvas } from "@napi-rs/canvas";
 import { buildEpisode } from "../src/longform/amma-oorukku-video";
 import { framePainter, renderEpisode } from "../src/longform/episode";
 
-const DIR = resolve(__dirname, "..", "..", "Moolai Illa Machan", "Videos", "01 Amma Oorukku Pona Oru Naal");
+const DIR = resolve(__dirname, "..", "..", "Channels", "Moolai Illa Machan", "Videos", "01 Amma Oorukku Pona Oru Naal");
 
 function pieces(): Record<string, Buffer> {
   const file = join(DIR, "voice", "splits.json");

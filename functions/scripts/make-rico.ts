@@ -20,7 +20,7 @@ import {
 } from "../src/auto/rico-day1";
 import { geminiSpeech, narrationFromPcm, silentNarration, splitDialogue } from "../src/auto/voice";
 
-const ROOT = resolve(__dirname, "..", "..", "Moolai Illa Machan", "Shorts", "Rico");
+const ROOT = resolve(__dirname, "..", "..", "Channels", "Moolai Illa Machan", "Shorts", "Rico");
 const ENDING = resolve(__dirname, "..", ".local", "ending-laugh-5s.mp4");
 
 interface RicoShort {

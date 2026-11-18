@@ -18,7 +18,7 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { COLLECTIONS, SHORT_HEIGHT, SHORT_WIDTH, YOUTUBE_TAG_CHARS_SAFE, fitYoutubeTags, storagePaths, youtubeTagChars } from "@shortflow/shared";
 
-const SHORTS = resolve(__dirname, "..", "..", "Moolai Illa Machan", "Shorts");
+const SHORTS = resolve(__dirname, "..", "..", "Channels", "Moolai Illa Machan", "Shorts");
 const PROJECT = "fir-4b5dc";
 const CHANNEL = "moolaiillamachan";
 

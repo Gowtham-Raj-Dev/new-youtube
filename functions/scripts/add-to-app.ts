@@ -20,7 +20,7 @@ import { COLLECTIONS, SHORT_HEIGHT, SHORT_WIDTH, storagePaths, youtubeTagChars }
 import { planScript } from "../src/auto/bank";
 import { EPISODES } from "../src/auto/episodes";
 
-const ROOT = resolve(__dirname, "..", "..", "Moolai Illa Machan", "Shorts");
+const ROOT = resolve(__dirname, "..", "..", "Channels", "Moolai Illa Machan", "Shorts");
 const PROJECT = "fir-4b5dc";
 const CHANNEL = "moolaiillamachan";
 
