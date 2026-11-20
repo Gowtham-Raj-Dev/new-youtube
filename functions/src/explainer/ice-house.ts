@@ -34,13 +34,13 @@ const LINES: ExLine[] = [
   L(1, "k1", "ice-house", "சென்னை மெரினா பீச். இந்த வெள்ளைக் கட்டடத்தை, நீங்க பார்த்திருப்பீங்க.", { host: "big", action: "point", overlay: { kind: "pin", text: "மெரினா பீச்", small: "சென்னை" } }),
   L(2, "k1", "ice-house", "இன்னைக்கு இதுக்குப் பேரு, விவேகானந்தர் இல்லம். ஆனா, நூத்தி எண்பது வருஷத்துக்கு முன்னாடி, இது ஒரு ஐஸ் குடோன்!", { sub: "இன்னைக்கு இதுக்குப் பேரு, விவேகானந்தர் இல்லம். ஆனா, 180 வருஷத்துக்கு முன்னாடி, இது ஒரு ஐஸ் குடோன்!", action: "surprised", overlay: { kind: "morph", from: "விவேகானந்தர் இல்லம்", to: "ஐஸ் குடோன்!" } }),
   L(3, "k1", "ice-blocks", "அந்த ஐஸ் எங்க இருந்து வந்தது தெரியுமா? அமெரிக்காவுல இருந்து! கப்பல்ல! நாலு மாசப் பயணம்!", { action: "excited", overlay: { kind: "flow", items: ["அமெரிக்கா", "4 மாசம் கப்பல்", "மெட்ராஸ்"] } }),
-  L(4, "k1", "chennai-sun", "ஃப்ரிட்ஜ் இல்ல, கரண்ட் இல்ல. அப்படி ஒரு காலத்துல, இது எப்படி நடந்தது? வாங்க, பார்க்கலாம்.", { action: "think", overlay: { kind: "type", text: "இது எப்படி நடந்தது?" } }),
-  L(5, "k1", "chennai-sun", "வணக்கம் நண்பர்களே! நான் உங்க உலகம் இப்போ பையன். இந்த மாதிரி வீடியோ பிடிச்சிருந்தா, சப்ஸ்க்ரைப் பண்ணிக்கோங்க. பிடிச்சா மட்டும் போதும்!", { action: "wave", overlay: { kind: "title", text: "பிடிச்சா SUBSCRIBE", small: "கட்டாயம் இல்ல" } }),
+  L(4, "k1", "matka", "ஃப்ரிட்ஜ் இல்ல, கரண்ட் இல்ல. அப்படி ஒரு காலத்துல, இது எப்படி நடந்தது? வாங்க, பார்க்கலாம்.", { action: "think", overlay: { kind: "type", text: "இது எப்படி நடந்தது?" } }),
+  L(5, "k1", "ice-house", "வணக்கம் நண்பர்களே! நான் உங்க உலகம் இப்போ பையன். இந்த மாதிரி வீடியோ பிடிச்சிருந்தா, சப்ஸ்க்ரைப் பண்ணிக்கோங்க. பிடிச்சா மட்டும் போதும்!", { action: "wave", overlay: { kind: "title", text: "பிடிச்சா SUBSCRIBE", small: "கட்டாயம் இல்ல" } }),
 
   // ── Madras without ice ──
   L(6, "k2", "old-madras", "ஆயிரத்து எண்ணூறுகள்ல, மெட்ராஸ். வெயில் கொளுத்துது. ஃபேன் இல்ல, ஃப்ரிட்ஜ் இல்ல.", { chapter: "ஐஸ் இல்லாத மெட்ராஸ்", host: "corner", sub: "1800-கள்ல, மெட்ராஸ். வெயில் கொளுத்துது. ஃபேன் இல்ல, ஃப்ரிட்ஜ் இல்ல.", action: "sad", overlay: { kind: "list", items: ["ஃபேன் இல்ல", "ஃப்ரிட்ஜ் இல்ல", "கரண்டே இல்ல"] } }),
   L(7, "k2", "matka", "தண்ணியைக் குளிர வைக்க, மண் பானை தான் ஒரே வழி. ஆனா, ஜில்லுன்னு ஐஸ் போட்ட ஒரு டிரிங்க்? அது ஒரு கனவு!", { action: "shrug", overlay: { kind: "morph", from: "மண் பானைத் தண்ணி", to: "ஐஸ் டிரிங்க்? கனவு!" } }),
-  L(8, "k2", "chennai-sun", "இங்க இருந்த பிரிட்டிஷ்காரங்க, இந்த வெயில் தாங்க முடியாம, தவிச்சாங்க. ஐஸ் கிடைச்சா, எவ்ளோ காசு வேணும்னாலும் தரத் தயார்!", { action: "please", overlay: { kind: "meter", label: "வெயில்", from: 0.5, to: 0.98, small: "தாங்கவே முடியல!" } }),
+  L(8, "k2", "old-madras", "இங்க இருந்த பிரிட்டிஷ்காரங்க, இந்த வெயில் தாங்க முடியாம, தவிச்சாங்க. ஐஸ் கிடைச்சா, எவ்ளோ காசு வேணும்னாலும் தரத் தயார்!", { action: "please", overlay: { kind: "meter", label: "வெயில்", from: 0.5, to: 0.98, small: "தாங்கவே முடியல!" } }),
   L(9, "k2", "ice-blocks", "ஆனா, நம்ம ஊர்ல பனியே பெய்யாது. அப்போ ஐஸ், எங்க இருந்து கிடைக்கும்?", { action: "think", overlay: { kind: "title", text: "ஐஸ் எங்க கிடைக்கும்?" } }),
 
   // ── The Ice King ──
@@ -61,7 +61,7 @@ const LINES: ExLine[] = [
   L(20, "k5", "sawdust", "ரகசியம், மரத்தூள்! ஐஸ் கட்டிகளை நெருக்கமா அடுக்கி, சுத்தியும் ரெண்டு அடி அளவுக்கு, மரத்தூள் போட்டு மூடுவாங்க. அது வெப்பத்தை உள்ள விடாது.", { action: "idea", overlay: { kind: "flow", items: ["ஐஸ் கட்டி", "மரத்தூள்", "உருகாது!"] } }),
   L(21, "k5", "cape", "கப்பல், அட்லாண்டிக் கடலைத் தாண்டி, ஆப்பிரிக்காவைச் சுத்தி, இந்தியப் பெருங்கடலுக்கு வரும். ரெண்டு தடவை, பூமத்திய ரேகையைக் கடக்கணும்!", { action: "point", overlay: { kind: "flow", items: ["பாஸ்டன்", "ஆப்பிரிக்கா", "இந்தியா"] } }),
   L(22, "k5", "clipper", "ஆயிரத்து எண்ணூத்தி முப்பத்தி மூணு. முதல் கப்பல், நூத்தி எண்பது டன் ஐஸோட கிளம்புச்சு.", { sub: "1833. முதல் கப்பல், 180 டன் ஐஸோட கிளம்புச்சு.", action: "count", overlay: { kind: "year", value: 180, suffix: " டன்", label: "கிளம்பும் போது" } }),
-  L(23, "k5", "kolkata", "நாலு மாசம் கழிச்சு, கல்கத்தா போய்ச் சேர்ந்தப்போ, கிட்டத்தட்ட நூறு டன் ஐஸ், உருகாம அப்படியே இருந்தது! மக்கள் ஆச்சரியப்பட்டுப் போயிட்டாங்க.", { sub: "4 மாசம் கழிச்சு, கல்கத்தா போய்ச் சேர்ந்தப்போ, கிட்டத்தட்ட 100 டன் ஐஸ், உருகாம அப்படியே இருந்தது! மக்கள் ஆச்சரியப்பட்டுப் போயிட்டாங்க.", action: "celebrate", overlay: { kind: "year", value: 100, suffix: " டன்", label: "சேர்ந்த போது, மீதி" } }),
+  L(23, "k5", "clipper", "நாலு மாசம் கழிச்சு, கல்கத்தா போய்ச் சேர்ந்தப்போ, கிட்டத்தட்ட நூறு டன் ஐஸ், உருகாம அப்படியே இருந்தது! மக்கள் ஆச்சரியப்பட்டுப் போயிட்டாங்க.", { sub: "4 மாசம் கழிச்சு, கல்கத்தா போய்ச் சேர்ந்தப்போ, கிட்டத்தட்ட 100 டன் ஐஸ், உருகாம அப்படியே இருந்தது! மக்கள் ஆச்சரியப்பட்டுப் போயிட்டாங்க.", action: "celebrate", overlay: { kind: "year", value: 100, suffix: " டன்", label: "சேர்ந்த போது, மீதி" } }),
   L(24, "k5", "friends", "இதெல்லாம் உங்களுக்குப் புதுசா இருந்தா, ஒரு லைக் போடுங்க. சென்னையை லவ் பண்ற ஒரு நண்பருக்கு, ஷேர் பண்ணுங்க!", { action: "thumbs", overlay: { kind: "title", text: "புதுசா இருந்தா LIKE", small: "நண்பருக்கு SHARE" } }),
 
   // ── The ice house on the Marina ──
@@ -101,7 +101,6 @@ const LINES: ExLine[] = [
 const IMAGES: ExVideo["images"] = {
   "ice-house": { q: "Vivekanandar Illam Chennai" },
   "ice-blocks": { q: "ice blocks" },
-  "chennai-sun": { q: "Chennai street sunny day" },
   "old-madras": { q: "Madras Fort St George painting", file: "File:William Daniell - Madras, or Fort St. George, in the Bay of Bengal -- A Squall Passing Off - Google Art Project.jpg" },
   matka: { q: "clay water pot India" },
   "frozen-pond": { q: "frozen pond Massachusetts winter" },
@@ -109,17 +108,16 @@ const IMAGES: ExVideo["images"] = {
   "ice-harvest": { q: "ice harvesting", file: "File:NSRW Ice Harvesting - sawing.jpg" },
   walden: { q: "Walden Pond" },
   book: { q: "Walden Thoreau title page" },
-  clipper: { q: "East Indiaman ship painting", file: "File:Hindostan (East Indiaman).jpg" },
+  clipper: { q: "East Indiaman ship painting", file: "File:Portrait of the East Indiaman Neptune in two positions off the Downs.jpg" },
   sawdust: { q: "sawdust wood shavings" },
   cape: { q: "Cape of Good Hope painting", file: "File:Thomas Whitcombe - View of Cape Town, Table Bay, Cape of Good Hope.jpg" },
-  kolkata: { q: "Calcutta Hooghly river painting" },
   friends: { q: "Chennai Marina lighthouse" },
   masula: { q: "Masula boat Madras" },
   "iced-drink": { q: "glass of water with ice cubes" },
   "ice-machine": { q: "ice factory" },
   castle: { q: "Vivekanandar Illam" },
   chicago: { q: "World's Parliament of Religions 1893" },
-  vivekananda: { q: "Swami Vivekananda 1893", file: "File:Swami Vivekananda 1893 Chicago image Harrison - no text.jpg" },
+  vivekananda: { q: "Swami Vivekananda 1893", file: "File:Swami Vivekananda 1893 Scanned Image.jpg" },
   museum: { q: "Vivekanandar Illam museum" },
   timeline: { q: "Vivekanandar Illam front" },
   fridge: { q: "ice cube tray freezer" },
@@ -139,7 +137,7 @@ export const ICE_HOUSE: ExVideo = {
     lines: [
       { text: "மெரினாவுல", size: 120, fill: "#F7F7F2" },
       { text: "ஐஸ் குடோன்!", size: 170, fill: "#8FE3FF" },
-      { text: "அமெரிக்கா → மெட்ராஸ்", size: 96, fill: "#FF8A3D" },
+      { text: "அமெரிக்காவுல இருந்து!", size: 96, fill: "#FF8A3D" },
     ],
   },
   ...HOST_VOICE,
