@@ -502,6 +502,96 @@ export function brightMusic(seconds: number, seed: number): Buffer {
   return stereoWav(roomL, roomR);
 }
 
+/**
+ * A sea-voyage bed for the frost-look explainers, synthesised from scratch: a
+ * lilting 6/8 (two dotted beats a bar at 66) — a celesta picking the chord, a soft
+ * squeezebox-like pad breathing in and out, a round bass on each dotted beat and a
+ * frame drum (boom … tak tak). Dm → Bb → F → C: a little mysterious, a little
+ * adventurous. First two bars celesta and pad only; every eighth bar rests the drum.
+ */
+export function voyageMusic(seconds: number, seed: number): Buffer {
+  const dotted = 60 / 66;
+  const eighth = dotted / 3;
+  const bar = dotted * 2;
+  const n = Math.round(SR * seconds);
+  const wetL = new Float32Array(n);
+  const wetR = new Float32Array(n);
+  const dry = new Float32Array(n);
+  let state = (Math.abs(Math.floor(seed)) % 2147483646) + 1;
+  const rnd = () => (state = (state * 16807) % 2147483647) / 2147483647;
+  const chords = [
+    { notes: [62, 65, 69, 74], root: 38 },
+    { notes: [58, 62, 65, 70], root: 34 },
+    { notes: [60, 65, 69, 72], root: 41 },
+    { notes: [60, 64, 67, 72], root: 36 },
+  ];
+  const each = (start: number, len: number, f: (t: number, i: number) => void) => {
+    const i0 = Math.round(start * SR);
+    const count = Math.min(n - i0, Math.round(len * SR));
+    for (let i = 0; i < count; i++) f(i / SR, i0 + i);
+  };
+  // Celesta: a bell-ish sine with a quick bright partial.
+  const celesta = (at: number, freq: number, vel: number, pan: number) =>
+    each(at, 1.6, (t, i) => {
+      const env = Math.min(1, t / 0.003) * Math.exp(-t * 3.2);
+      const x = (Math.sin(2 * Math.PI * freq * t) + 0.4 * Math.exp(-t * 14) * Math.sin(2 * Math.PI * freq * 3 * t) + 0.1 * Math.exp(-t * 6) * Math.sin(2 * Math.PI * freq * 2 * t)) * env * vel;
+      wetL[i] += x * (1 - pan);
+      wetR[i] += x * pan;
+    });
+  // Squeezebox pad: two slightly detuned reedy tones (odd harmonics), swelling with the bellows.
+  const reed = (at: number, freq: number, len: number) =>
+    each(at, len, (t, i) => {
+      const bellows = Math.sin(Math.PI * Math.min(1, t / len)) ** 1.2 * (0.85 + 0.15 * Math.sin(2 * Math.PI * (1 / dotted) * t)) * 0.012;
+      const tone = (f: number) => Math.sin(2 * Math.PI * f * t) + 0.33 * Math.sin(6 * Math.PI * f * t) + 0.15 * Math.sin(10 * Math.PI * f * t);
+      wetL[i] += tone(freq * 0.997) * bellows;
+      wetR[i] += tone(freq * 1.003) * bellows;
+    });
+  const bass = (at: number, freq: number, len: number) =>
+    each(at, len, (t, i) => {
+      const env = Math.min(1, t / 0.01) * Math.exp(-t * 2.5) * (t > len - 0.05 ? (len - t) / 0.05 : 1);
+      dry[i] += Math.sin(2 * Math.PI * freq * t) * env * 0.2;
+    });
+  const boom = (at: number) =>
+    each(at, 0.4, (t, i) => {
+      dry[i] += Math.sin(2 * Math.PI * (70 * t + (40 / 15) * (1 - Math.exp(-t * 15)))) * Math.exp(-t * 8) * 0.3;
+    });
+  const tak = (at: number, vel: number) => {
+    let lp = 0;
+    each(at, 0.12, (t, i) => {
+      lp += ((rnd() * 2 - 1) - lp) * 0.6;
+      dry[i] += (lp * 0.7 + Math.sin(2 * Math.PI * 420 * t) * 0.5) * Math.exp(-t * 40) * vel;
+    });
+  };
+
+  const offset = Math.abs(Math.floor(seed)) % chords.length;
+  for (let b = 0; b * bar < seconds; b++) {
+    const at = b * bar;
+    const chord = chords[(b + offset) % chords.length];
+    chord.notes.slice(0, 3).forEach((m) => reed(at, midi(m), bar));
+    // The celesta rocks on the eighths: low-high-mid, low-high-mid, an octave up.
+    const pattern = [0, 2, 1, 3, 2, 1].map((j) => chord.notes[j] + 12);
+    pattern.forEach((m, k) => {
+      if (k > 0 && rnd() < 0.15) return;
+      celesta(at + k * eighth + (rnd() - 0.5) * 0.008, midi(m), (k % 3 === 0 ? 0.05 : 0.034) + rnd() * 0.008, 0.25 + rnd() * 0.5);
+    });
+    bass(at, midi(chord.root), dotted * 0.95);
+    bass(at + dotted, midi(chord.root + 7), dotted * 0.95);
+    if (b < 2 || b % 8 === 7) continue;
+    boom(at);
+    tak(at + eighth * 2, 0.06);
+    boom(at + dotted);
+    tak(at + dotted + eighth, 0.04);
+    tak(at + dotted + eighth * 2, 0.06);
+  }
+  const roomL = room(wetL, 0);
+  const roomR = room(wetR, 23);
+  for (let s = 0; s < n; s++) {
+    roomL[s] += dry[s];
+    roomR[s] += dry[s];
+  }
+  return stereoWav(roomL, roomR);
+}
+
 /** 16-bit stereo WAV of the two channels, brought to a peak of 0.7, faded in and out. */
 function stereoWav(wetL: Float32Array, wetR: Float32Array): Buffer {
   const n = wetL.length;

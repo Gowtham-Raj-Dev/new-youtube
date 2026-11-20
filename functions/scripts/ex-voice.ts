@@ -93,21 +93,25 @@ async function main() {
     }
     const pcm = await readFile(file);
     const manual = join(dir, `${take}.splits.json`);
-    let parts: Buffer[] | null;
+    let parts: Buffer[] | null = null;
+    // The part of the take to cut up: all of it, or what follows `{ "skip": s }` (e.g. Gemini reading the style note aloud first).
+    let body = pcm;
     if (existsSync(manual)) {
+      const m = JSON.parse(await readFile(manual, "utf8")) as Array<[number, number]> | { skip: number };
       // Seconds per line, by hand, when the pauses fool the cutting.
-      const spans = JSON.parse(await readFile(manual, "utf8")) as Array<[number, number]>;
-      parts = spans.map(([a, b]) => pcm.subarray(Math.round(a * 24_000) * 2, Math.round(b * 24_000) * 2));
-    } else parts = split(pcm, lines);
+      if (Array.isArray(m)) parts = m.map(([a, b]) => pcm.subarray(Math.round(a * 24_000) * 2, Math.round(b * 24_000) * 2));
+      else body = pcm.subarray(Math.round(m.skip * 24_000) * 2);
+    }
+    if (!parts) parts = split(body, lines);
     if (!parts) {
       // A narrator's pauses inside a sentence can look like those between: share the speech out by length.
-      const { from, to } = speechBounds(pcm);
+      const { from, to } = speechBounds(body);
       const letters = lines.map((l) => l.tamil.length);
       const total = letters.reduce((s, n) => s + n, 0);
       let at = from;
       parts = letters.map((n) => {
         const len = Math.round((((to - from) * n) / total) / 2) * 2;
-        const part = pcm.subarray(at, at + len);
+        const part = body.subarray(at, at + len);
         at += len;
         return part;
       });

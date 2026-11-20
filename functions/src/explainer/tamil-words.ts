@@ -24,6 +24,8 @@
  *   Anacondas themselves live in South America.
  * - Roman trade with the Tamil coast: pepper; Arikamedu near Puducherry.
  * - The British East India Company's Madras settlement: 1639.
+ * - Quiz: tea from Chinese (Hokkien tê), tomato from Nahuatl tomatl (Mexico), teak from தேக்கு.
+ *   Old British spellings: Tuticorin (தூத்துக்குடி), Trichinopoly (திருச்சிராப்பள்ளி).
  * Not used (weak or unclear sources): ginger, rice, orange; cheroot left out (a kid host
  * and a cigar).
  */
@@ -84,6 +86,14 @@ const LINES: ExLine[] = [
   L(35, "k8", "bus", "ஆனா ஒரு ட்விஸ்ட்! இப்போ நாம, பஸ், டிக்கெட், போன்னு, தினமும் இங்கிலீஷ் வார்த்தைகளை பேசுறோம்.", { sub: "ஆனா ஒரு ட்விஸ்ட்! இப்போ நாம, Bus, Ticket, Phone-ன்னு, தினமும் இங்கிலீஷ் வார்த்தைகளை பேசுறோம்.", action: "surprised", overlay: { kind: "list", items: ["Bus", "Ticket", "Phone"] } }),
   L(36, "k8", "bus", "அப்போ கணக்கு சரியாப் போச்சு! மொழிகள், ஒண்ணுக்கொண்ணு கொடுத்து வாங்கித் தான் வளருது.", { action: "proud", overlay: { kind: "flow", items: ["தமிழ்", "கொடுத்து வாங்கல்", "இங்கிலீஷ்"] } }),
 
+  // ── A little quiz (added for length, its own take) ──
+  L(41, "k10", "tea", "சரி, இப்போ ஒரு சின்ன க்விஸ்! இந்த மூணு இங்கிலீஷ் வார்த்தைகள்ல, எது தமிழ்ல இருந்து வந்தது?", { chapter: "ஒரு சின்ன க்விஸ்!", action: "think", overlay: { kind: "list", items: ["Tea", "Tomato", "Teak"] } }),
+  L(42, "k10", "tea", "டீ? டொமேட்டோ? இல்ல டீக்? யோசிங்க! பதில் தெரிஞ்சா, கமெண்ட்லயும் போடுங்க.", { sub: "Tea? Tomato? இல்ல Teak? யோசிங்க! பதில் தெரிஞ்சா, கமெண்ட்லயும் போடுங்க.", action: "count", overlay: { kind: "type", text: "யோசிங்க..." } }),
+  L(43, "k10", "tomato", "டீ, சீனாவுல இருந்து வந்த வார்த்தை. டொமேட்டோ, மெக்சிகோ பக்கத்து பழைய மொழியில இருந்து வந்தது.", { sub: "Tea, சீனாவுல இருந்து வந்த வார்த்தை. Tomato, மெக்சிகோ பக்கத்து பழைய மொழியில இருந்து வந்தது.", action: "shrug", overlay: { kind: "list", items: ["Tea: சீனா", "Tomato: மெக்சிகோ"] } }),
+  L(44, "k10", "teak", "சரியான பதில், டீக்! நம்ம தேக்கு தான். கொஞ்சம் முன்னாடி தான் சொன்னேன், ஞாபகம் இருக்கா?", { sub: "சரியான பதில், Teak! நம்ம தேக்கு தான். கொஞ்சம் முன்னாடி தான் சொன்னேன், ஞாபகம் இருக்கா?", action: "celebrate", overlay: { kind: "stamp", text: "Teak = தேக்கு!" } }),
+  L(45, "k10", "tuticorin", "இன்னொரு ஆச்சரியம். பழைய இங்கிலீஷ் மேப்ல, நம்ம ஊர் பேருங்களே மாறிப் போயிருக்கு. தூத்துக்குடி, டூட்டிகொரின் ஆச்சு!", { sub: "இன்னொரு ஆச்சரியம். பழைய இங்கிலீஷ் மேப்ல, நம்ம ஊர் பேருங்களே மாறிப் போயிருக்கு. தூத்துக்குடி, Tuticorin ஆச்சு!", action: "surprised", overlay: { kind: "word", ta: "தூத்துக்குடி", en: "Tuticorin", label: ["நம்ம பேரு", "அவங்க பேரு"], at: 0.7 } }),
+  L(46, "k10", "trichy", "திருச்சிராப்பள்ளி, டிரிச்சினாபொலி ஆச்சு! நம்ம வாயில வந்த பேரு, அவங்க வாயில வேற மாதிரி ஆயிடுச்சு. மாங்காய், மேங்கோ ஆன மாதிரியே!", { sub: "திருச்சிராப்பள்ளி, Trichinopoly ஆச்சு! நம்ம வாயில வந்த பேரு, அவங்க வாயில வேற மாதிரி ஆயிடுச்சு. மாங்காய், Mango ஆன மாதிரியே!", action: "nod", overlay: { kind: "word", ta: "திருச்சிராப்பள்ளி", en: "Trichinopoly", label: ["நம்ம பேரு", "அவங்க பேரு"], at: 0.2 } }),
+
   // ── Goodbye ──
   L(37, "k9", "mango", "அடுத்த தடவை, மேங்கோ ஜூஸ் குடிக்கும் போது, ஞாபகம் வச்சுக்கோங்க. அந்தப் பேருக்குள்ள, நம்ம தமிழ் இருக்கு!", { chapter: "கடைசியா ஒரு விஷயம்", host: "big", sub: "அடுத்த தடவை, Mango ஜூஸ் குடிக்கும் போது, ஞாபகம் வச்சுக்கோங்க. அந்தப் பேருக்குள்ள, நம்ம தமிழ் இருக்கு!", action: "proud", overlay: { kind: "title", text: "பேருக்குள்ள தமிழ்!" } }),
   L(38, "k9", "kattumaram", "இன்னும் எந்த இங்கிலீஷ் வார்த்தை, தமிழ்ல இருந்து வந்ததுன்னு உங்களுக்குத் தெரியும்? கமெண்ட்ல சொல்லுங்க!", { action: "think", overlay: { kind: "type", text: "உங்களுக்குத் தெரிஞ்ச வார்த்தை?" } }),
@@ -109,15 +119,19 @@ const IMAGES: ExVideo["images"] = {
   ruby: { q: "corundum ruby crystal" },
   friends: { q: "Tamil books" },
   peacock: { q: "Indian peacock feathers display" },
-  "old-ship": { q: "ancient ship painting" },
+  "old-ship": { q: "Phoenician war galley relief", file: "File:Relief depicting thin gypsum wall panel shows a Phoenician war galley sailing down the Euphrates River.jpg" },
   anaconda: { q: "green anaconda" },
   python: { q: "Python molurus", file: "File:Python molurus molurus 2.jpg" },
   elephant: { q: "Sri Lankan elephant" },
   "roman-coins": { q: "Roman coins found in India" },
-  fort: { q: "Fort St. George Chennai" },
+  fort: { q: "Fort St. George Chennai", file: "File:Fort St. George, Chennai, India (14409686273).jpg" },
   market: { q: "spice market India" },
   bus: { q: "Tamil Nadu government bus" },
-  marina: { q: "Marina Beach Chennai", file: "File:Marina Beach in Chennai.jpg" },
+  marina: { q: "Marina Beach Chennai", file: "File:Chennai Marina beach panorama1.jpg" },
+  tea: { q: "tea leaves cup" },
+  tomato: { q: "tomatoes" },
+  tuticorin: { q: "Thoothukudi beach sea" },
+  trichy: { q: "Rockfort Tiruchirappalli" },
 };
 
 export const TAMIL_WORDS: ExVideo = {

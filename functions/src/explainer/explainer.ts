@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createCanvas, GlobalFonts, loadImage, type Canvas, type Image, type SKRSContext2D } from "@napi-rs/canvas";
 import { clamp01, easeInOut, easeOut, easeOutBack, INK, talkEnvelope } from "../auto/cartoon";
-import { brightMusic, calmMusic, lofiMusic, nightMusic, pulseMusic } from "../auto/music";
+import { brightMusic, calmMusic, lofiMusic, nightMusic, pulseMusic, voyageMusic } from "../auto/music";
 import { loadFonts, run } from "../auto/render";
 import { sfxTrack, type SfxEvent } from "../auto/sfx";
 
@@ -97,6 +97,8 @@ let FEED = false;
 let NIGHT = false;
 /** The paper look: the pulse look's drawing on a light notebook page. */
 let PAPER = false;
+/** The frost look: the pulse look's drawing in ice. */
+let FROST = false;
 const FPS = 30;
 const RATE = 24_000;
 export const HANDLE = "@ulagamippo";
@@ -222,9 +224,15 @@ export interface ExVideo {
    * the next one, chapters as a new notebook page sliding up with the name highlighted,
    * and the `word` overlay for where a word came from.
    */
-  look?: "story" | "pulse" | "feed" | "night" | "paper";
-  /** The music bed: "calm" (default), "pulse" (a light beat), "lofi" (slow, warm keys and a lazy beat), "night" (music box over soft pads, a clock's tick) or "bright" (marimba, plucked bass, shaker: light and curious). */
-  music?: "calm" | "pulse" | "lofi" | "night" | "bright";
+  /**
+   * "frost" (video 11 on): icy blue and sun orange — a cold midnight-blue backdrop with
+   * frost growing in the corners and snow drifting down, the picture melting down
+   * into the next one with a dripping edge, chapters frozen inside a block of ice
+   * that drops in and slides away.
+   */
+  look?: "story" | "pulse" | "feed" | "night" | "paper" | "frost";
+  /** The music bed: "calm" (default), "pulse" (a light beat), "lofi" (slow, warm keys and a lazy beat), "night" (music box over soft pads, a clock's tick), "bright" (marimba, plucked bass, shaker: light and curious) or "voyage" (a lilting 6/8 sea song: celesta, squeezebox pad, frame drum). */
+  music?: "calm" | "pulse" | "lofi" | "night" | "bright" | "voyage";
   /** A Short of its own (9:16, 1080×1920), not a long video cut into parts. */
   tall?: boolean;
   /** A "Top N" video: chapter cards count down (big 3, 2, 1) instead of "அத்தியாயம் N". */
@@ -1293,7 +1301,10 @@ function usePalette(look: ExVideo["look"]) {
         : look === "paper"
           ? // Ink navy (the page itself is PAPER_BG), marigold highlighter, red pen.
             ["#1B2140", "#FFB627", "#E63946", "27,33,64", "255,182,39", "230,57,70"]
-          : ["#0E1117", "#2EE6C9", "#FF5A5F", "14,17,23", "46,230,201", "255,90,95"];
+          : look === "frost"
+            ? // Deep cold blue, ice cyan, and Madras-sun orange against it.
+              ["#0A1A2A", "#8FE3FF", "#FF8A3D", "10,26,42", "143,227,255", "255,138,61"]
+            : ["#0E1117", "#2EE6C9", "#FF5A5F", "14,17,23", "46,230,201", "255,90,95"];
   P_BG = bg;
   TEAL = acc;
   CORAL = hot;
@@ -1354,7 +1365,7 @@ const subRoom = (cx: number, want: number, pad: number) => Math.min(want, 2 * Ma
 const popIn = (local: number, delay = 0, len = 0.45) => easeOutBack((local - delay) / len);
 
 /** A solid rounded box, with a soft drop shadow unless `shadow` is false. */
-function chip(ctx: SKRSContext2D, x: number, y: number, w: number, h: number, r: number, fill: string, shadow = true) {
+function chip(ctx: SKRSContext2D, x: number, y: number, w: number, h: number, r: number, fill: string | ReturnType<SKRSContext2D["createLinearGradient"]>, shadow = true) {
   ctx.save();
   if (shadow) {
     ctx.shadowColor = "rgba(0,0,0,0.45)";
@@ -1404,6 +1415,59 @@ function boxText(ctx: SKRSContext2D, text: string, x: number, y: number, size: n
   return w;
 }
 
+/**
+ * Frost creeping in from the four corners: feathery branches, each a spine with
+ * little side shoots, breathing slightly in length. `alpha` scales how strong.
+ */
+function drawFrost(ctx: SKRSContext2D, t: number, alpha: number) {
+  ctx.save();
+  ctx.lineCap = "round";
+  const corners: Array<[number, number, number]> = [
+    [0, 0, 0],
+    [F.w, 0, Math.PI / 2],
+    [F.w, F.h, Math.PI],
+    [0, F.h, -Math.PI / 2],
+  ];
+  corners.forEach(([cx, cy, turn], ci) => {
+    for (let k = 0; k < 9; k++) {
+      const seed = ci * 50 + k;
+      const ang = turn + (Math.PI / 2) * (0.06 + 0.88 * hash(seed));
+      const len = (90 + hash(seed + 7) * 170) * (1 + 0.04 * Math.sin(t * 0.5 + seed));
+      const ex = cx + Math.cos(ang) * len;
+      const ey = cy + Math.sin(ang) * len;
+      ctx.strokeStyle = `rgba(220,245,255,${alpha * (0.22 + 0.2 * hash(seed + 3))})`;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+      // Side shoots at 60°, shorter towards the tip.
+      ctx.lineWidth = 1.4;
+      for (let s = 1; s <= 5; s++) {
+        const f = s / 6;
+        const px = cx + (ex - cx) * f;
+        const py = cy + (ey - cy) * f;
+        const sl = len * 0.22 * (1 - f * 0.7);
+        for (const side of [-1, 1]) {
+          const a = ang + side * (Math.PI / 3);
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(px + Math.cos(a) * sl, py + Math.sin(a) * sl);
+          ctx.stroke();
+        }
+      }
+    }
+  });
+  ctx.restore();
+}
+
+/** The frost look's melting edge at x, `u` (0–1) of the way down the screen, wavy and with a few long drips. */
+function meltEdge(x: number, u: number, t: number) {
+  const c = pulseCard();
+  const drip = Math.max(0, Math.sin(x * 0.011 + 1.7)) ** 10 * 90 + Math.max(0, Math.sin(x * 0.023 + 4.1)) ** 14 * 60;
+  return c.y - 100 + (c.h + 200) * u + 12 * Math.sin(x * 0.018 + t * 2.5) + drip * Math.sin(Math.PI * u);
+}
+
 /** The paper look's page colour. */
 const PAPER_BG = "#F4ECDB";
 
@@ -1435,6 +1499,28 @@ function drawPulseBackdrop(ctx: SKRSContext2D, t: number) {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, F.w, F.h);
   };
+  if (FROST) {
+    // A cold night blue, an orange warmth low down (the Madras sun outside), frost in the corners, snow drifting.
+    const sky = ctx.createLinearGradient(0, 0, 0, F.h);
+    sky.addColorStop(0, "#06121F");
+    sky.addColorStop(1, "#103049");
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, F.w, F.h);
+    glow(F.w * (0.85 + 0.05 * Math.sin(t * 0.15)), F.h * 1.05, F.w * 0.5, `rgba(${HOTRGB},0.16)`);
+    glow(F.w * (0.15 + 0.05 * Math.cos(t * 0.13)), F.h * 0.1, F.w * 0.5, `rgba(${ACCRGB},0.14)`);
+    drawFrost(ctx, t, 0.55);
+    for (let k = 0; k < 90; k++) {
+      const speed = 18 + hash(k + 200) * 30;
+      const y = ((hash(k + 100) * (F.h + 40) + t * speed) % (F.h + 40)) - 20;
+      const x = hash(k) * F.w + 18 * Math.sin(t * (0.4 + hash(k + 300)) + k);
+      const r = 1.2 + hash(k + 400) * 2.6;
+      ctx.fillStyle = `rgba(230,248,255,${0.18 + 0.4 * hash(k + 500)})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    return;
+  }
   if (PAPER) {
     drawPaper(ctx);
     // Faint letters, Tamil and English mixed, drifting slowly across the page.
@@ -2635,7 +2721,8 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
   FEED = b.video.look === "feed";
   NIGHT = b.video.look === "night";
   PAPER = b.video.look === "paper";
-  PULSE = b.video.look === "pulse" || FEED || NIGHT || PAPER;
+  FROST = b.video.look === "frost";
+  PULSE = b.video.look === "pulse" || FEED || NIGHT || PAPER || FROST;
   usePalette(b.video.look);
   CLEAN = !!b.video.clean || STORY || PULSE;
   loadTamilFonts();
@@ -2668,7 +2755,8 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
   }
   // The host's place over time: 0 big, 1 in the corner.
   const moves: Array<{ at: number; to: number }> = [];
-  for (const l of b.lines) if (l.host) moves.push({ at: l.start, to: l.host === "big" ? 0 : 1 });
+  // On a chapter's first line he moves while its card is up, so he never walks across the line's text.
+  for (const l of b.lines) if (l.host) moves.push({ at: l.chapter ? l.start - CHAPTER_GAP + 0.3 : l.start, to: l.host === "big" ? 0 : 1 });
   const hostMode = (t: number) => {
     let mode = 0;
     for (const m of moves) {
@@ -2750,6 +2838,20 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
         };
         if (si > 0 && u < 0.5) flip(si - 1, 1 - easeInOut(u * 2));
         else flip(si, si > 0 ? easeOut((u - 0.5) * 2) : 1);
+      } else if (FROST) {
+        // The next picture runs down over the last one like meltwater, its edge wavy with a few long drips.
+        if (u < 1) {
+          drawPulsePicture(ctx, pictures[stretches[si - 1].key], stretches[si - 1].key, prog(stretches[si - 1]), si - 1, 0);
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(c.x, c.y);
+          ctx.lineTo(c.x + c.w, c.y);
+          for (let x = c.x + c.w; x >= c.x - 20; x -= 16) ctx.lineTo(x, meltEdge(x, u, t));
+          ctx.closePath();
+          ctx.clip();
+          drawPulsePicture(ctx, pictures[st.key], st.key, prog(st), si, 0);
+          ctx.restore();
+        } else drawPulsePicture(ctx, pictures[st.key], st.key, prog(st), si, 0);
       } else if (NIGHT) {
         if (u < 1) drawPulsePicture(ctx, pictures[stretches[si - 1].key], stretches[si - 1].key, prog(stretches[si - 1]), si - 1, 0);
         ctx.save();
@@ -2770,7 +2872,16 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       ctx.roundRect(c.x, c.y, c.w, c.h, c.r);
       ctx.clip();
       // The seam of a slide: a teal bar (a lime one across, in the feed).
-      if (NIGHT) {
+      if (FROST) {
+        // The melting edge glints ice-blue.
+        if (u < 1) {
+          ctx.strokeStyle = `rgba(${ACCRGB},0.9)`;
+          ctx.lineWidth = 6;
+          ctx.beginPath();
+          for (let x = c.x - 20; x <= c.x + c.w + 20; x += 16) ctx.lineTo(x, meltEdge(x, u, t));
+          ctx.stroke();
+        }
+      } else if (NIGHT) {
         // Night: the picture a little bluer, as if lit by the moon.
         ctx.fillStyle = "rgba(30,50,140,0.16)";
         ctx.fillRect(c.x, c.y, c.w, c.h);
@@ -2787,8 +2898,18 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       low.addColorStop(1, shade(0.55));
       ctx.fillStyle = low;
       ctx.fillRect(c.x, c.y, c.w, c.h);
+      // Frost: looking out through a cold window, ice feathering in from its corners.
+      if (FROST) drawFrost(ctx, t, 0.75);
       ctx.restore();
-      if (NIGHT) {
+      if (FROST) {
+        // The window's edge: ice blue, warming to orange at the bottom right.
+        const edge = ctx.createLinearGradient(c.x, c.y, c.x + c.w, c.y + c.h);
+        edge.addColorStop(0, "rgba(230,248,255,0.9)");
+        edge.addColorStop(0.6, `rgba(${ACCRGB},0.6)`);
+        edge.addColorStop(1, `rgba(${HOTRGB},0.8)`);
+        ctx.strokeStyle = edge;
+        ctx.lineWidth = 4;
+      } else if (NIGHT) {
         // The screen's edge: moonlight gold fading into indigo.
         const edge = ctx.createLinearGradient(c.x + c.w, c.y, c.x, c.y + c.h);
         edge.addColorStop(0, `rgba(${ACCRGB},0.85)`);
@@ -2947,6 +3068,79 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       ctx.fillStyle = SNOW;
       ctx.font = `34px ${TB}`;
       ctx.fillText(ch.name, tw + 22, 31);
+      ctx.restore();
+    } else if (ch && FROST && cardT < CHAPTER_GAP + 0.4) {
+      // A block of ice drops in over the darkened screen with the chapter frozen inside it, then slides down and away, dripping.
+      const fadeIn = clamp01(cardT / 0.3);
+      const outU = easeInOut(clamp01((cardT - CHAPTER_GAP) / 0.4));
+      ctx.save();
+      ctx.globalAlpha = fadeIn * (1 - outU);
+      ctx.fillStyle = shade(0.72);
+      ctx.fillRect(0, 0, F.w, F.h);
+      ctx.restore();
+      const half = Math.min(areaX, F.w - areaX) - edge();
+      ctx.font = `112px ${SH}`;
+      const nameW = ctx.measureText(ch.name).width;
+      const W = Math.min(2 * half, Math.max(760, nameW + 200));
+      const H = 330;
+      const drop = easeOutBack(clamp01(cardT / 0.55));
+      const y = F.chapterY - H / 2 - (F.chapterY + H) * (1 - drop) + (F.h - F.chapterY + H) * outU;
+      const x = areaX - W / 2;
+      ctx.save();
+      ctx.globalAlpha = 1 - outU * 0.6;
+      // The block: translucent ice, brighter at the top left, with a cold glow.
+      ctx.save();
+      ctx.shadowColor = `rgba(${ACCRGB},0.55)`;
+      ctx.shadowBlur = 70;
+      const ice = ctx.createLinearGradient(x, y, x + W, y + H);
+      ice.addColorStop(0, "rgba(235,250,255,0.95)");
+      ice.addColorStop(0.45, "rgba(170,225,245,0.88)");
+      ice.addColorStop(1, "rgba(110,185,220,0.9)");
+      chip(ctx, x, y, W, H, 34, ice, false);
+      ctx.restore();
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.roundRect(x, y, W, H, 34);
+      ctx.stroke();
+      // A shine along the top, a few cracks.
+      ctx.fillStyle = "rgba(255,255,255,0.45)";
+      ctx.beginPath();
+      ctx.roundRect(x + 30, y + 18, W - 60, 22, 11);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.55)";
+      ctx.lineWidth = 2.5;
+      for (let k = 0; k < 3; k++) {
+        const sx = x + W * (0.12 + 0.36 * k) + 40 * hash(ch.no * 7 + k);
+        ctx.beginPath();
+        ctx.moveTo(sx, y + H);
+        ctx.lineTo(sx + 30 * (hash(k + 11) - 0.5), y + H - 70);
+        ctx.lineTo(sx + 50 * (hash(k + 13) - 0.5), y + H - 120);
+        ctx.stroke();
+      }
+      // Drips under the block once it has landed.
+      const drip = rise(cardT, 0.7, 1.2);
+      ctx.fillStyle = "rgba(200,240,255,0.85)";
+      for (let k = 0; k < 4; k++) {
+        const dx = x + W * (0.18 + 0.22 * k);
+        const len = (18 + 30 * hash(k + ch.no)) * drip;
+        ctx.beginPath();
+        ctx.ellipse(dx, y + H + len * 0.5, 7, 6 + len * 0.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = `46px ${TB}`;
+      ctx.fillStyle = "#1C6C8F";
+      ctx.fillText(b.video.countdown ? `நம்பர் ${rankOf(ch.no)}` : `அத்தியாயம் ${num}`, areaX, y + 92);
+      const fit = Math.min(1, (W - 120) / nameW);
+      ctx.save();
+      ctx.translate(areaX, y + 200);
+      ctx.scale(fit, fit);
+      ctx.font = `112px ${SH}`;
+      ctx.fillStyle = P_BG;
+      ctx.fillText(ch.name, 0, 0);
+      ctx.restore();
       ctx.restore();
     } else if (ch && PAPER && cardT < CHAPTER_GAP + 0.4) {
       // A fresh notebook page slides up over everything, the chapter written on it and highlighted, then slides on up and away.
@@ -3311,7 +3505,7 @@ export async function renderExplainer(b: Built, outPath: string, workDir: string
   const musicPath = join(workDir, "music.wav");
   const sfxPath = join(workDir, "sfx.wav");
   await writeFile(voicePath, voiceWav);
-  const bed = { pulse: pulseMusic, lofi: lofiMusic, night: nightMusic, bright: brightMusic, calm: calmMusic }[b.video.music ?? "calm"];
+  const bed = { pulse: pulseMusic, lofi: lofiMusic, night: nightMusic, bright: brightMusic, voyage: voyageMusic, calm: calmMusic }[b.video.music ?? "calm"];
   await writeFile(musicPath, bed(b.duration + 0.5, musicSeed));
   await writeFile(sfxPath, sfxTrack(b.duration + 0.5, b.sfx));
 

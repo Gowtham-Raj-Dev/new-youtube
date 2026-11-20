@@ -4,6 +4,7 @@ import { AI_JOBS } from "./ai-jobs";
 import { CHENNAI_FLOOD } from "./chennai-flood";
 import { CHOLA_NAVY } from "./chola-navy";
 import { HANGOVER } from "./hangover";
+import { ICE_HOUSE } from "./ice-house";
 import { KUMARI_KANDAM } from "./kumari-kandam";
 import { LATE_NIGHT } from "./late-night";
 import { PHONE } from "./phone-addiction";
@@ -11,7 +12,7 @@ import { SAD_ANIMALS } from "./sad-animals";
 import { TAMIL_WORDS } from "./tamil-words";
 import { TN_HISTORY } from "./tn-history";
 
-export const VIDEOS: ExVideo[] = [TN_HISTORY, AI_JOBS, CHOLA_NAVY, SAD_ANIMALS, CHENNAI_FLOOD, KUMARI_KANDAM, HANGOVER, PHONE, LATE_NIGHT, TAMIL_WORDS];
+export const VIDEOS: ExVideo[] = [TN_HISTORY, AI_JOBS, CHOLA_NAVY, SAD_ANIMALS, CHENNAI_FLOOD, KUMARI_KANDAM, HANGOVER, PHONE, LATE_NIGHT, TAMIL_WORDS, ICE_HOUSE];
 
 /** `--v=01` picks video 01; without it, the newest. */
 export function pickVideo(args = process.argv.slice(2)): ExVideo {

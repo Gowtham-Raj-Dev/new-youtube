@@ -78,8 +78,13 @@ async function main() {
         console.log(`${key}: nothing free found for "${q}"`);
         continue;
       }
-      const img = await fetch(pick.thumb, { headers: { "User-Agent": UA } });
-      if (!img.ok) throw new Error(`download ${img.status}`);
+      let img = await fetch(pick.thumb, { headers: { "User-Agent": UA } });
+      // A size Commons hasn't made yet can be refused (429); the common 1280 px one usually is there.
+      if (img.status === 429 && /\/1920px-/.test(pick.thumb)) {
+        await new Promise((r) => setTimeout(r, 3000));
+        img = await fetch(pick.thumb.replace("/1920px-", "/1280px-"), { headers: { "User-Agent": UA } });
+      }
+      if (!img.ok) throw new Error(`download ${img.status} ${pick.title}`);
       await writeFile(out, Buffer.from(await img.arrayBuffer()));
       credits[key] = pick;
       console.log(`${key}: ${pick.title} (${pick.license})`);
