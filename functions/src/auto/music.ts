@@ -309,6 +309,99 @@ export function lofiMusic(seconds: number, seed: number): Buffer {
   return stereoWav(roomL, roomR);
 }
 
+/**
+ * A night bed for the night-look explainers, synthesised from scratch: a music
+ * box picking a slow arpeggio over soft pads (Am9 → Fmaj7 → Cmaj7 → G6) at 72 BPM,
+ * a deep sub, and a quiet clock — tick, tock — on every beat. From bar 5 a soft
+ * brushed pulse joins, so it moves along without putting anyone to sleep; every
+ * eighth bar it rests.
+ */
+export function nightMusic(seconds: number, seed: number): Buffer {
+  const BPM = 72;
+  const beat = 60 / BPM;
+  const bar = beat * 4;
+  const n = Math.round(SR * seconds);
+  const wetL = new Float32Array(n);
+  const wetR = new Float32Array(n);
+  const dry = new Float32Array(n);
+  let state = (Math.abs(Math.floor(seed)) % 2147483646) + 1;
+  const rnd = () => (state = (state * 16807) % 2147483647) / 2147483647;
+  const chords = [
+    { notes: [57, 60, 64, 67, 71], root: 45 },
+    { notes: [53, 57, 60, 64, 67], root: 41 },
+    { notes: [48, 52, 55, 59, 64], root: 36 },
+    { notes: [55, 59, 62, 64, 67], root: 43 },
+  ];
+  const each = (start: number, len: number, f: (t: number, i: number) => void) => {
+    const i0 = Math.round(start * SR);
+    const count = Math.min(n - i0, Math.round(len * SR));
+    for (let i = 0; i < count; i++) f(i / SR, i0 + i);
+  };
+  // Music box: a bright tine — the note and an inharmonic partial that dies fast.
+  const tine = (at: number, freq: number, vel: number, pan: number) =>
+    each(at, 2.4, (t, i) => {
+      const env = Math.min(1, t / 0.002) * Math.exp(-t * 2.2);
+      const x = (Math.sin(2 * Math.PI * freq * t) + 0.35 * Math.exp(-t * 7) * Math.sin(2 * Math.PI * freq * 5.4 * t) + 0.15 * Math.sin(4 * Math.PI * freq * t) * Math.exp(-t * 4)) * env * vel;
+      wetL[i] += x * (1 - pan);
+      wetR[i] += x * pan;
+    });
+  const pad = (at: number, freq: number, len: number) =>
+    each(at, len, (t, i) => {
+      const env = Math.sin(Math.PI * Math.min(1, t / len)) ** 1.4 * 0.028;
+      const w = 2 * Math.PI * freq * t;
+      wetL[i] += (Math.sin(w * 0.996) + 0.3 * Math.sin(w * 2.002)) * env;
+      wetR[i] += (Math.sin(w * 1.004) + 0.3 * Math.sin(w * 1.998)) * env;
+    });
+  const sub = (at: number, freq: number, len: number) =>
+    each(at, len, (t, i) => {
+      const env = Math.min(1, t / 0.04) * Math.exp(-t * 0.8) * (t > len - 0.1 ? (len - t) / 0.1 : 1);
+      dry[i] += Math.sin(2 * Math.PI * freq * t) * env * 0.17;
+    });
+  // The clock: a short woody click, higher for "tick", lower for "tock".
+  const tick = (at: number, freq: number, vel: number) =>
+    each(at, 0.05, (t, i) => {
+      dry[i] += Math.sin(2 * Math.PI * freq * t) * Math.exp(-t * 160) * vel;
+    });
+  const kick = (at: number) =>
+    each(at, 0.3, (t, i) => {
+      dry[i] += Math.sin(2 * Math.PI * (44 * t + (50 / 20) * (1 - Math.exp(-t * 20)))) * Math.exp(-t * 10) * 0.32;
+    });
+  const brush = (at: number, vel: number) => {
+    let lp = 0;
+    each(at, 0.18, (t, i) => {
+      lp += ((rnd() * 2 - 1) - lp) * 0.5;
+      dry[i] += lp * Math.min(1, t / 0.01) * Math.exp(-t * 16) * vel;
+    });
+  };
+
+  const offset = Math.abs(Math.floor(seed)) % chords.length;
+  for (let b = 0; b * bar < seconds; b++) {
+    const at = b * bar;
+    const chord = chords[(b + offset) % chords.length];
+    chord.notes.slice(0, 4).forEach((m) => pad(at, midi(m), bar));
+    // The music box: up the chord and back, an octave up, now and then a note left out.
+    const arp = [0, 2, 4, 2, 1, 3, 4, 3].map((j) => chord.notes[j] + 12);
+    arp.forEach((m, k) => {
+      if (k > 0 && rnd() < 0.18) return;
+      tine(at + k * beat * 0.5 + (rnd() - 0.5) * 0.01, midi(m), 0.05 + rnd() * 0.012, 0.3 + rnd() * 0.4);
+    });
+    sub(at, midi(chord.root), bar * 0.9);
+    for (let k = 0; k < 4; k++) tick(at + k * beat, k % 2 ? 1500 : 2100, 0.05);
+    if (b < 4 || b % 8 === 7) continue;
+    kick(at);
+    kick(at + beat * 2.5);
+    brush(at + beat, 0.06);
+    brush(at + beat * 3, 0.06);
+  }
+  const roomL = room(wetL, 0);
+  const roomR = room(wetR, 23);
+  for (let s = 0; s < n; s++) {
+    roomL[s] += dry[s];
+    roomR[s] += dry[s];
+  }
+  return stereoWav(roomL, roomR);
+}
+
 /** 16-bit stereo WAV of the two channels, brought to a peak of 0.7, faded in and out. */
 function stereoWav(wetL: Float32Array, wetR: Float32Array): Buffer {
   const n = wetL.length;

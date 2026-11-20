@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createCanvas, GlobalFonts, loadImage, type Canvas, type Image, type SKRSContext2D } from "@napi-rs/canvas";
 import { clamp01, easeInOut, easeOut, easeOutBack, INK, talkEnvelope } from "../auto/cartoon";
-import { calmMusic, lofiMusic, pulseMusic } from "../auto/music";
+import { calmMusic, lofiMusic, nightMusic, pulseMusic } from "../auto/music";
 import { loadFonts, run } from "../auto/render";
 import { sfxTrack, type SfxEvent } from "../auto/sfx";
 
@@ -93,6 +93,8 @@ let STORY = false;
 let PULSE = false;
 /** The feed look: the pulse look's drawing, in the feed's colours and moves. */
 let FEED = false;
+/** The night look: the pulse look's drawing under a starry sky, with the story's clock. */
+let NIGHT = false;
 const FPS = 30;
 const RATE = 24_000;
 export const HANDLE = "@ulagamippo";
@@ -166,6 +168,8 @@ export interface ExLine {
   host?: "big" | "corner";
   /** Starts a chapter with this name. */
   chapter?: string;
+  /** The night look: the story's clock at this chapter, e.g. { time: "02:00", label: "நடு ராத்திரி" }; "HH:MM" times fast-forward from the last one. */
+  clock?: { time: string; label: string };
 }
 
 export interface ExVideo {
@@ -199,10 +203,13 @@ export interface ExVideo {
    * "feed" (video 08 on): the pulse look made into a phone feed — lime, pink and
    * violet on a deep night blue, pictures swiping up, chapters dropping in as a
    * notification, lists stacking up like notifications.
+   * "night" (video 09 on): the pulse look at night — moon gold and indigo on a
+   * starry midnight sky, a crescent moon, pictures dissolving into each other, and
+   * a glowing digital clock that fast-forwards to each chapter's time (`clock`).
    */
-  look?: "story" | "pulse" | "feed";
-  /** The music bed: "calm" (default), "pulse" (a light beat) or "lofi" (slow, warm keys and a lazy beat). */
-  music?: "calm" | "pulse" | "lofi";
+  look?: "story" | "pulse" | "feed" | "night";
+  /** The music bed: "calm" (default), "pulse" (a light beat), "lofi" (slow, warm keys and a lazy beat) or "night" (music box over soft pads, a clock's tick). */
+  music?: "calm" | "pulse" | "lofi" | "night";
   /** A Short of its own (9:16, 1080×1920), not a long video cut into parts. */
   tall?: boolean;
   /** A "Top N" video: chapter cards count down (big 3, 2, 1) instead of "அத்தியாயம் N". */
@@ -1255,16 +1262,50 @@ let HOTRGB = "255,90,95";
 let DARK_CHIP = "rgba(14,17,23,0.9)";
 const shade = (a: number) => `rgba(${INKRGB},${a})`;
 
-/** Sets the colours for the pulse look, or the feed look's lime, pink and violet night. */
-function usePalette(feed: boolean) {
-  P_BG = feed ? "#0D0A1F" : "#0E1117";
-  TEAL = feed ? "#C6F432" : "#2EE6C9";
-  CORAL = feed ? "#FF3E8A" : "#FF5A5F";
-  INKRGB = feed ? "13,10,31" : "14,17,23";
-  ACCRGB = feed ? "198,244,50" : "46,230,201";
-  HOTRGB = feed ? "255,62,138" : "255,90,95";
+/** Sets the colours for the pulse look, the feed look's lime, pink and violet, or the night look's moon gold and indigo. */
+function usePalette(look: ExVideo["look"]) {
+  const [bg, acc, hot, ink, accRgb, hotRgb] =
+    look === "feed"
+      ? ["#0D0A1F", "#C6F432", "#FF3E8A", "13,10,31", "198,244,50", "255,62,138"]
+      : look === "night"
+        ? ["#070B1E", "#FFD36E", "#4E6CF0", "7,11,30", "255,211,110", "78,108,240"]
+        : ["#0E1117", "#2EE6C9", "#FF5A5F", "14,17,23", "46,230,201", "255,90,95"];
+  P_BG = bg;
+  TEAL = acc;
+  CORAL = hot;
+  INKRGB = ink;
+  ACCRGB = accRgb;
+  HOTRGB = hotRgb;
   DARK_CHIP = shade(0.9);
 }
+
+/** The night look's crescent moon at (x, y), radius r, with a soft halo. */
+function drawMoon(ctx: SKRSContext2D, x: number, y: number, r: number, alpha = 1) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const halo = ctx.createRadialGradient(x, y, r * 0.6, x, y, r * 3.2);
+  halo.addColorStop(0, `rgba(${ACCRGB},0.28)`);
+  halo.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = halo;
+  ctx.fillRect(x - r * 3.2, y - r * 3.2, r * 6.4, r * 6.4);
+  // The crescent: the moon, with a disc cut out of it on the upper right.
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.arc(x + r * 0.45, y - r * 0.28, r * 0.86, 0, Math.PI * 2, true);
+  ctx.fillStyle = TEAL;
+  ctx.fill("evenodd");
+  ctx.restore();
+}
+
+/** "HH:MM" on a 12-hour dial as minutes, or null for anything else (e.g. "30 நாள்"). */
+const clockMinutes = (s: string) => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+  return m ? (Number(m[1]) % 12) * 60 + Number(m[2]) : null;
+};
+const clockText = (min: number) => {
+  const h = Math.floor(min / 60) % 12;
+  return `${String(h === 0 ? 12 : h).padStart(2, "0")}:${String(Math.floor(min % 60)).padStart(2, "0")}`;
+};
 
 /** The rounded screen the pictures play in. */
 function pulseCard() {
@@ -1335,6 +1376,38 @@ function drawPulseBackdrop(ctx: SKRSContext2D, t: number) {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, F.w, F.h);
   };
+  if (NIGHT) {
+    // A midnight sky: deep blue fading up from the bottom, twinkling stars, a crescent moon, faint clouds drifting.
+    const sky = ctx.createLinearGradient(0, 0, 0, F.h);
+    sky.addColorStop(0, "#050817");
+    sky.addColorStop(1, "#111C46");
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, F.w, F.h);
+    glow(F.w * (0.2 + 0.05 * Math.sin(t * 0.13)), F.h * 0.95, F.w * 0.6, `rgba(${HOTRGB},0.22)`);
+    for (let k = 0; k < 170; k++) {
+      const x = hash(k) * F.w;
+      const y = hash(k + 500) * F.h;
+      const tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * (0.8 + hash(k + 900) * 2.2) + k));
+      const r = 1 + hash(k + 1300) * 2.2;
+      ctx.fillStyle = `rgba(255,255,255,${(0.25 + 0.6 * hash(k + 1700)) * tw})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const tall = F.h > F.w;
+    // Left of the handle in the wide frame; in a Short, top right above the screen.
+    drawMoon(ctx, tall ? F.w - 150 : F.w - 300, tall ? 110 : 48 + 4 * Math.sin(t * 0.3), tall ? 56 : 30);
+    for (let k = 0; k < 3; k++) {
+      const x = ((t * (14 + k * 6) + k * 700) % (F.w + 900)) - 450;
+      const y = F.h * (0.12 + k * 0.33);
+      const g = ctx.createRadialGradient(x, y, 0, x, y, 420);
+      g.addColorStop(0, "rgba(160,180,255,0.07)");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(x - 420, y - 420, 840, 840);
+    }
+    return;
+  }
   if (FEED) {
     // A violet and a pink glow, and faint posts scrolling up and up, like a feed that never ends.
     glow(F.w * (0.15 + 0.08 * Math.sin(t * 0.21)), F.h * (0.2 + 0.1 * Math.cos(t * 0.17)), F.w * 0.65, "rgba(140,108,255,0.3)");
@@ -2404,8 +2477,9 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
   F = frame;
   STORY = b.video.look === "story";
   FEED = b.video.look === "feed";
-  PULSE = b.video.look === "pulse" || FEED;
-  usePalette(FEED);
+  NIGHT = b.video.look === "night";
+  PULSE = b.video.look === "pulse" || FEED || NIGHT;
+  usePalette(b.video.look);
   CLEAN = !!b.video.clean || STORY || PULSE;
   loadTamilFonts();
   const pictures = await loadPictures(b.video);
@@ -2474,8 +2548,14 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       drawPulseBackdrop(ctx, t);
       const c = pulseCard();
       const u = si > 0 ? easeInOut(clamp01((t - st.from) / XF)) : 1;
-      // Pulse slides the next picture in from the right; the feed swipes it up from below, like a Short.
-      if (FEED) {
+      // Pulse slides the next picture in from the right; the feed swipes it up from below, like a Short; the night dissolves it in.
+      if (NIGHT) {
+        if (u < 1) drawPulsePicture(ctx, pictures[stretches[si - 1].key], stretches[si - 1].key, prog(stretches[si - 1]), si - 1, 0);
+        ctx.save();
+        ctx.globalAlpha = u;
+        drawPulsePicture(ctx, pictures[st.key], st.key, prog(st), si, 0);
+        ctx.restore();
+      } else if (FEED) {
         if (u < 1) drawPulsePicture(ctx, pictures[stretches[si - 1].key], stretches[si - 1].key, prog(stretches[si - 1]), si - 1, 0, -u * c.h);
         drawPulsePicture(ctx, pictures[st.key], st.key, prog(st), si, 0, (1 - u) * c.h);
       } else {
@@ -2487,7 +2567,11 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       ctx.roundRect(c.x, c.y, c.w, c.h, c.r);
       ctx.clip();
       // The seam of a slide: a teal bar (a lime one across, in the feed).
-      if (u < 1) {
+      if (NIGHT) {
+        // Night: the picture a little bluer, as if lit by the moon.
+        ctx.fillStyle = "rgba(30,50,140,0.16)";
+        ctx.fillRect(c.x, c.y, c.w, c.h);
+      } else if (u < 1) {
         ctx.fillStyle = TEAL;
         if (FEED) ctx.fillRect(c.x, c.y + (1 - u) * c.h - 5, c.w, 10);
         else ctx.fillRect(c.x + (1 - u) * c.w - 7, c.y, 14, c.h);
@@ -2501,7 +2585,15 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       ctx.fillStyle = low;
       ctx.fillRect(c.x, c.y, c.w, c.h);
       ctx.restore();
-      if (FEED) {
+      if (NIGHT) {
+        // The screen's edge: moonlight gold fading into indigo.
+        const edge = ctx.createLinearGradient(c.x + c.w, c.y, c.x, c.y + c.h);
+        edge.addColorStop(0, `rgba(${ACCRGB},0.85)`);
+        edge.addColorStop(0.5, "rgba(255,255,255,0.12)");
+        edge.addColorStop(1, `rgba(${HOTRGB},0.8)`);
+        ctx.strokeStyle = edge;
+        ctx.lineWidth = 3;
+      } else if (FEED) {
         // The screen's edge glows violet into pink.
         const edge = ctx.createLinearGradient(c.x, c.y, c.x + c.w, c.y + c.h);
         edge.addColorStop(0, "rgba(140,108,255,0.9)");
@@ -2555,7 +2647,104 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
     const chLine = ch && b.lines.find((l) => l.chapterNo === ch.no)!;
     const cardT = chLine ? t - (chLine.start - CHAPTER_GAP) : 99;
     const num = ch ? String(rankOf(ch.no)).padStart(2, "0") : "";
-    if (ch && FEED && cardT < CHAPTER_GAP + 0.4) {
+    const clockNow = chLine?.clock;
+    if (ch && NIGHT && cardT < CHAPTER_GAP + 0.4) {
+      // The night sky closes over the screen; a big glowing clock fast-forwards from the last chapter's time to this one's.
+      const fadeIn = easeOut(clamp01(cardT / 0.35));
+      const fadeOut = easeInOut(clamp01((cardT - CHAPTER_GAP) / 0.4));
+      const vis = fadeIn * (1 - fadeOut);
+      ctx.save();
+      ctx.globalAlpha = vis;
+      ctx.fillStyle = shade(0.86);
+      ctx.fillRect(0, 0, F.w, F.h);
+      ctx.restore();
+      const prevClock = b.lines.find((l) => l.chapterNo === ch.no - 1)?.clock;
+      const to = clockNow ? clockMinutes(clockNow.time) : null;
+      const from = prevClock ? clockMinutes(prevClock.time) : null;
+      let shown = clockNow?.time ?? num;
+      let rolling = false;
+      if (to !== null && from !== null && to !== from) {
+        const u = easeInOut(clamp01((cardT - 0.25) / 0.95));
+        shown = clockText(from + (((to - from + 720) % 720) * u));
+        rolling = u > 0 && u < 1;
+      }
+      ctx.save();
+      ctx.globalAlpha = vis;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      // The label: the chapter number and the time of day, with a small moon before it.
+      const lift = 30 * (1 - fadeIn);
+      ctx.font = `44px ${TB}`;
+      const label = `அத்தியாயம் ${num}${clockNow ? ` · ${clockNow.label}` : ""}`;
+      const lw = ctx.measureText(label).width;
+      ctx.fillStyle = "rgba(247,247,242,0.75)";
+      ctx.fillText(label, areaX + 26, F.chapterY - 265 + lift);
+      drawMoon(ctx, areaX - lw / 2 - 22, F.chapterY - 268 + lift, 20);
+      // The time, each character in a cell of its own so the digits do not jiggle as they roll.
+      const isTime = clockMinutes(shown) !== null;
+      ctx.shadowColor = `rgba(${ACCRGB},0.65)`;
+      ctx.shadowBlur = rolling ? 70 : 45;
+      ctx.fillStyle = TEAL;
+      if (isTime) {
+        ctx.font = `250px ${TB}`;
+        const cell = ctx.measureText("0").width * 1.02;
+        const chars = [...shown];
+        const widths = chars.map((c) => (c === ":" ? cell * 0.55 : cell));
+        let x = areaX - widths.reduce((a, b2) => a + b2, 0) / 2;
+        chars.forEach((c, i) => {
+          // The colon blinks once the clock has stopped.
+          const blink = c === ":" && !rolling && Math.floor(cardT * 2) % 2 === 1 ? 0.25 : 1;
+          ctx.globalAlpha = vis * blink;
+          ctx.fillText(c, x + widths[i] / 2, F.chapterY - 105 + lift);
+          x += widths[i];
+        });
+      } else {
+        // Words (e.g. "30 நாள்") in one piece, so Tamil letters keep their vowel signs.
+        ctx.font = `190px ${TB}`;
+        ctx.fillText(shown, areaX, F.chapterY - 105 + lift);
+      }
+      ctx.restore();
+      ctx.save();
+      const p = rise(cardT, 0.45, 0.6);
+      ctx.globalAlpha = vis * p;
+      // Kept inside the frame wherever the text area is centred.
+      fitText(ctx, ch.name, areaX, F.chapterY + 85 + 20 * (1 - p), 100, Math.min(1300, 2 * Math.min(areaX, F.w - areaX) - 120), SNOW, TB);
+      const u2 = rise(cardT, 0.6, 0.8);
+      const g = ctx.createLinearGradient(areaX - 260, 0, areaX + 260, 0);
+      g.addColorStop(0, `rgba(${HOTRGB},0)`);
+      g.addColorStop(0.5, TEAL);
+      g.addColorStop(1, `rgba(${HOTRGB},0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(areaX - 260 * u2, F.chapterY + 160, 520 * u2, 5);
+      ctx.restore();
+    } else if (ch && NIGHT) {
+      // The badge: the story's time in gold, then the chapter's name.
+      const p = easeOut(clamp01((cardT - CHAPTER_GAP - 0.3) / 0.5));
+      const time = clockNow?.time ?? num;
+      ctx.save();
+      ctx.globalAlpha = p;
+      ctx.translate(48 - 40 * (1 - p), F.h > F.w ? F.badgeY : 22);
+      ctx.font = `32px ${TB}`;
+      const tw = ctx.measureText(time).width + 40;
+      ctx.font = `34px ${TB}`;
+      const w = tw + ctx.measureText(ch.name).width + 44;
+      chip(ctx, 0, 0, w, 58, 29, DARK_CHIP, false);
+      ctx.save();
+      ctx.shadowColor = `rgba(${ACCRGB},0.5)`;
+      ctx.shadowBlur = 16;
+      chip(ctx, 0, 0, tw, 58, 29, TEAL, false);
+      ctx.restore();
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      ctx.fillStyle = P_BG;
+      ctx.font = `32px ${TB}`;
+      ctx.fillText(time, tw / 2, 31);
+      ctx.textAlign = "left";
+      ctx.fillStyle = SNOW;
+      ctx.font = `34px ${TB}`;
+      ctx.fillText(ch.name, tw + 22, 31);
+      ctx.restore();
+    } else if (ch && FEED && cardT < CHAPTER_GAP + 0.4) {
       // A notification drops in over the dimmed screen: the app's icon with the chapter number, the chapter as its message.
       const inP = easeOutBack(clamp01(cardT / 0.5));
       const outP = easeInOut(clamp01((cardT - CHAPTER_GAP) / 0.4));
@@ -2869,7 +3058,8 @@ export async function renderExplainer(b: Built, outPath: string, workDir: string
   const musicPath = join(workDir, "music.wav");
   const sfxPath = join(workDir, "sfx.wav");
   await writeFile(voicePath, voiceWav);
-  await writeFile(musicPath, (b.video.music === "pulse" ? pulseMusic : b.video.music === "lofi" ? lofiMusic : calmMusic)(b.duration + 0.5, musicSeed));
+  const bed = { pulse: pulseMusic, lofi: lofiMusic, night: nightMusic, calm: calmMusic }[b.video.music ?? "calm"];
+  await writeFile(musicPath, bed(b.duration + 0.5, musicSeed));
   await writeFile(sfxPath, sfxTrack(b.duration + 0.5, b.sfx));
 
   const PART = 60 * FPS;
