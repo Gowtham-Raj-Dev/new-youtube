@@ -45,9 +45,9 @@ async function main() {
     const s = Math.max(1920 / bg.width, 1080 / bg.height);
     ctx.drawImage(bg, (1920 - bg.width * s) / 2, (1080 - bg.height * s) / 2, bg.width * s, bg.height * s);
     const shade = ctx.createLinearGradient(0, 0, 1920, 0);
-    if (v.look === "pulse" || v.look === "feed" || v.look === "night") {
-      // The pulse, feed and night looks: the text side nearly solid dark, so the picture's own words never show through.
-      const ink = v.look === "feed" ? "13,10,31" : v.look === "night" ? "7,11,30" : "14,17,23";
+    if (v.look === "pulse" || v.look === "feed" || v.look === "night" || v.look === "paper") {
+      // The pulse, feed, night and paper looks: the text side nearly solid dark, so the picture's own words never show through.
+      const ink = v.look === "feed" ? "13,10,31" : v.look === "night" ? "7,11,30" : v.look === "paper" ? "27,33,64" : "14,17,23";
       shade.addColorStop(0, `rgba(${ink},0.97)`);
       shade.addColorStop(0.5, `rgba(${ink},0.88)`);
       shade.addColorStop(0.8, `rgba(${ink},0.25)`);

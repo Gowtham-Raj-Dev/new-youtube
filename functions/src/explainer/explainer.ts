@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createCanvas, GlobalFonts, loadImage, type Canvas, type Image, type SKRSContext2D } from "@napi-rs/canvas";
 import { clamp01, easeInOut, easeOut, easeOutBack, INK, talkEnvelope } from "../auto/cartoon";
-import { calmMusic, lofiMusic, nightMusic, pulseMusic } from "../auto/music";
+import { brightMusic, calmMusic, lofiMusic, nightMusic, pulseMusic } from "../auto/music";
 import { loadFonts, run } from "../auto/render";
 import { sfxTrack, type SfxEvent } from "../auto/sfx";
 
@@ -50,7 +50,7 @@ export const WIDE: Frame = {
   w: 1920,
   h: 1080,
   host: { big: { x: 430, feet: 1130, h: 1000 }, corner: { x: 1725, feet: 1095, h: 540 } },
-  areaX: [1340, 840],
+  areaX: [1320, 840],
   overlayY: 430,
   overlayScale: 1,
   subY: 1018,
@@ -95,6 +95,8 @@ let PULSE = false;
 let FEED = false;
 /** The night look: the pulse look's drawing under a starry sky, with the story's clock. */
 let NIGHT = false;
+/** The paper look: the pulse look's drawing on a light notebook page. */
+let PAPER = false;
 const FPS = 30;
 const RATE = 24_000;
 export const HANDLE = "@ulagamippo";
@@ -143,7 +145,13 @@ export type Overlay =
   /** A gauge sliding from `from` to `to` (0–1), going red as it drops (pulse look). */
   | { kind: "meter"; label: string; from: number; to: number; small?: string }
   /** A health warning card (pulse look). */
-  | { kind: "warning"; text: string; small?: string };
+  | { kind: "warning"; text: string; small?: string }
+  /**
+   * Where a word came from (pulse looks): the Tamil word on a cream index card, an arrow
+   * drawing across (with `via`, the stop on the way, e.g. "manga · போர்த்துகீசு"), then the
+   * English word flipping in at `at` (0–1 of the line; default as a morph). `small` sits under it.
+   */
+  | { kind: "word"; ta: string; en: string; via?: string; small?: string; at?: number; label?: [string, string] };
 
 /** What the host does while he says a line. */
 export type Action =
@@ -207,9 +215,16 @@ export interface ExVideo {
    * starry midnight sky, a crescent moon, pictures dissolving into each other, and
    * a glowing digital clock that fast-forwards to each chapter's time (`clock`).
    */
-  look?: "story" | "pulse" | "feed" | "night";
-  /** The music bed: "calm" (default), "pulse" (a light beat), "lofi" (slow, warm keys and a lazy beat) or "night" (music box over soft pads, a clock's tick). */
-  music?: "calm" | "pulse" | "lofi" | "night";
+  /**
+   * "paper" (video 10 on, the user's ask 2026-11-20: a new design every video): the
+   * first light look — a cream notebook page with ruled lines and a red margin, faint
+   * Tamil and English letters drifting, the picture a taped photo that flips over to
+   * the next one, chapters as a new notebook page sliding up with the name highlighted,
+   * and the `word` overlay for where a word came from.
+   */
+  look?: "story" | "pulse" | "feed" | "night" | "paper";
+  /** The music bed: "calm" (default), "pulse" (a light beat), "lofi" (slow, warm keys and a lazy beat), "night" (music box over soft pads, a clock's tick) or "bright" (marimba, plucked bass, shaker: light and curious). */
+  music?: "calm" | "pulse" | "lofi" | "night" | "bright";
   /** A Short of its own (9:16, 1080×1920), not a long video cut into parts. */
   tall?: boolean;
   /** A "Top N" video: chapter cards count down (big 3, 2, 1) instead of "அத்தியாயம் N". */
@@ -291,6 +306,11 @@ function ctaClicks(l: Timed): number[] {
 }
 
 const morphAt = (l: Timed) => l.start + Math.max(0.8, (l.end - l.start) * 0.4);
+/** When a word overlay's English word flips in. */
+const wordAt = (l: Timed) => {
+  const at = l.overlay?.kind === "word" ? l.overlay.at : undefined;
+  return at === undefined ? morphAt(l) : l.start + Math.max(0.8, (l.end - l.start) * at);
+};
 
 export function build(video: ExVideo, voices: Record<number, Buffer>): Built {
   const lines: Timed[] = [];
@@ -347,6 +367,7 @@ export function build(video: ExVideo, voices: Record<number, Buffer>): Built {
     if (o.kind === "flow") listTimes(l).forEach((at) => sfx.push({ at, kind: "whoosh" }));
     if (o.kind === "meter") sfx.push({ at: s + 0.2, kind: "whoosh" });
     if (o.kind === "warning") sfx.push({ at: s + 0.2, kind: "thud" });
+    if (o.kind === "word") sfx.push({ at: s + 0.1, kind: "pop" }, { at: wordAt(l), kind: "whoosh" });
   }
   return { video, lines, voice, sfx, duration, chapters };
 }
@@ -1269,7 +1290,10 @@ function usePalette(look: ExVideo["look"]) {
       ? ["#0D0A1F", "#C6F432", "#FF3E8A", "13,10,31", "198,244,50", "255,62,138"]
       : look === "night"
         ? ["#070B1E", "#FFD36E", "#4E6CF0", "7,11,30", "255,211,110", "78,108,240"]
-        : ["#0E1117", "#2EE6C9", "#FF5A5F", "14,17,23", "46,230,201", "255,90,95"];
+        : look === "paper"
+          ? // Ink navy (the page itself is PAPER_BG), marigold highlighter, red pen.
+            ["#1B2140", "#FFB627", "#E63946", "27,33,64", "255,182,39", "230,57,70"]
+          : ["#0E1117", "#2EE6C9", "#FF5A5F", "14,17,23", "46,230,201", "255,90,95"];
   P_BG = bg;
   TEAL = acc;
   CORAL = hot;
@@ -1309,8 +1333,22 @@ const clockText = (min: number) => {
 
 /** The rounded screen the pictures play in. */
 function pulseCard() {
+  // The paper look keeps more of its page showing around the taped photo.
+  if (PAPER) return F.h > F.w ? { x: 56, y: 210, w: F.w - 112, h: F.h - 650, r: 26 } : { x: 84, y: 104, w: F.w - 168, h: 780, r: 24 };
   return F.h > F.w ? { x: 36, y: 200, w: F.w - 72, h: F.h - 620, r: 40 } : { x: 48, y: 96, w: F.w - 96, h: 812, r: 36 };
 }
+
+/** Clear space kept between any text box and the frame's edges (the user, 2026-11-20: text was touching the right edge). */
+const edge = () => (F.w > F.h ? 96 : 60);
+/** The widest a text box may be around the current text centre, in overlay units; set before each overlay is drawn. */
+let ROOM = 1500;
+const setRoom = (cx: number) => {
+  ROOM = (2 * Math.min(cx, F.w - cx) - 2 * edge()) / F.overlayScale;
+};
+/** A width for content that gets `pad` of box around it: at most `cap`, and never past the safe edges. */
+const fitRoom = (cap: number, pad = 0) => Math.max(240, Math.min(cap, ROOM - pad));
+/** The widest a subtitle row may be around `cx` when its bar adds `pad` (real frame units). */
+const subRoom = (cx: number, want: number, pad: number) => Math.min(want, 2 * Math.min(cx, F.w - cx) - 2 * edge() - pad);
 
 /** A pop-in with a little overshoot, `delay` s in, over `len` s. */
 const popIn = (local: number, delay = 0, len = 0.45) => easeOutBack((local - delay) / len);
@@ -1337,19 +1375,20 @@ function tag(ctx: SKRSContext2D, text: string, x: number, y: number, p: number, 
   ctx.translate(x, y);
   ctx.scale(p, p);
   ctx.font = `${size}px ${TB}`;
-  const w = Math.min(1100, ctx.measureText(text).width) + size * 1.3;
+  const cap = fitRoom(1100, size * 1.3);
+  const w = Math.min(cap, ctx.measureText(text).width) + size * 1.3;
   chip(ctx, -w / 2, -size * 0.85, w, size * 1.7, size * 0.85, fill);
   ctx.fillStyle = ink;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(text, 0, 3, 1100);
+  ctx.fillText(text, 0, 3, cap);
   ctx.restore();
 }
 
 /** Text on a solid box sized to it (at most 1080 wide), centred at (x, y); returns the box's width. */
 function boxText(ctx: SKRSContext2D, text: string, x: number, y: number, size: number, fill: string, ink: string): number {
   ctx.font = `${size}px ${TB}`;
-  const fit = Math.min(1, 920 / ctx.measureText(text).width);
+  const fit = Math.min(1, fitRoom(920, size * 1.1) / ctx.measureText(text).width);
   const tw = ctx.measureText(text).width * fit;
   const w = tw + size * 1.1;
   const h = size * 1.55 * Math.max(0.75, fit);
@@ -1365,6 +1404,26 @@ function boxText(ctx: SKRSContext2D, text: string, x: number, y: number, size: n
   return w;
 }
 
+/** The paper look's page colour. */
+const PAPER_BG = "#F4ECDB";
+
+/** A notebook page over the whole frame: cream, a soft light in the middle, blue ruled lines, a red margin, a little grain. */
+function drawPaper(ctx: SKRSContext2D) {
+  ctx.fillStyle = PAPER_BG;
+  ctx.fillRect(0, 0, F.w, F.h);
+  const lightUp = ctx.createRadialGradient(F.w * 0.5, F.h * 0.42, 0, F.w * 0.5, F.h * 0.42, Math.max(F.w, F.h) * 0.7);
+  lightUp.addColorStop(0, "rgba(255,255,255,0.45)");
+  lightUp.addColorStop(1, "rgba(120,90,40,0.12)");
+  ctx.fillStyle = lightUp;
+  ctx.fillRect(0, 0, F.w, F.h);
+  ctx.fillStyle = "rgba(70,110,175,0.16)";
+  for (let y = 64; y < F.h; y += 54) ctx.fillRect(0, y, F.w, 2);
+  ctx.fillStyle = `rgba(${HOTRGB},0.4)`;
+  ctx.fillRect(F.h > F.w ? 64 : 22, 0, 3, F.h);
+  ctx.fillStyle = "rgba(90,60,20,0.05)";
+  for (let k = 0; k < 900; k++) ctx.fillRect(hash(k + 3000) * F.w, hash(k + 4000) * F.h, 2, 2);
+}
+
 /** The dark backdrop around the screen: two slow colour glows drifting and a faint dot grid. */
 function drawPulseBackdrop(ctx: SKRSContext2D, t: number) {
   ctx.fillStyle = P_BG;
@@ -1376,6 +1435,28 @@ function drawPulseBackdrop(ctx: SKRSContext2D, t: number) {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, F.w, F.h);
   };
+  if (PAPER) {
+    drawPaper(ctx);
+    // Faint letters, Tamil and English mixed, drifting slowly across the page.
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const glyphs = ["அ", "A", "ம", "M", "க", "K", "த", "T", "ழ", "C", "ஆ", "E", "ங", "R", "ண", "W", "ப", "P", "ஞ", "S"];
+    glyphs.forEach((g, k) => {
+      const size = 90 + hash(k + 20) * 110;
+      const x = ((hash(k) * (F.w + 240) + t * (6 + hash(k + 40) * 10)) % (F.w + 240)) - 120;
+      const y = hash(k + 80) * F.h + 14 * Math.sin(t * 0.35 + k);
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate((hash(k + 60) - 0.5) * 0.5 + 0.05 * Math.sin(t * 0.3 + k));
+      ctx.font = `${size}px ${SH}`;
+      ctx.fillStyle = k % 3 === 0 ? `rgba(${HOTRGB},0.08)` : shade(0.06);
+      ctx.fillText(g, 0, 0);
+      ctx.restore();
+    });
+    ctx.restore();
+    return;
+  }
   if (NIGHT) {
     // A midnight sky: deep blue fading up from the bottom, twinkling stars, a crescent moon, faint clouds drifting.
     const sky = ctx.createLinearGradient(0, 0, 0, F.h);
@@ -1495,7 +1576,7 @@ function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
   const o = l.overlay!;
   const local = t - l.start;
   const out = clamp01((l.end + 0.4 - t) / 0.3);
-  if (!["title", "year", "list", "pin", "type", "morph", "stamp", "flow", "meter", "warning"].includes(o.kind)) return false;
+  if (!["title", "year", "list", "pin", "type", "morph", "stamp", "flow", "meter", "warning", "word"].includes(o.kind)) return false;
   if (out <= 0 || local < 0) return true;
   ctx.save();
   ctx.globalAlpha = out;
@@ -1510,7 +1591,7 @@ function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
       const widths = words.map((w) => ctx.measureText(w).width);
       const space = ctx.measureText(" ").width;
       const total = widths.reduce((a, b) => a + b, 0) + space * (words.length - 1);
-      const fit = Math.min(1, 960 / total);
+      const fit = Math.min(1, fitRoom(960, 80) / total);
       ctx.save();
       ctx.translate(cx, cy);
       ctx.scale(fit, fit);
@@ -1539,7 +1620,7 @@ function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
       const fmt = (n: number) => `${o.prefix ?? ""}${o.value >= 10_000 ? n.toLocaleString("en-IN") : String(n)}${o.suffix ?? ""}`;
       ctx.font = `170px ${TB}`;
       const full = ctx.measureText(fmt(o.value)).width;
-      const fit = Math.min(1, 900 / full);
+      const fit = Math.min(1, fitRoom(900, 120) / full);
       ctx.save();
       ctx.globalAlpha = out * rise(local, 0.05, 0.3);
       ctx.translate(cx, cy + 25);
@@ -1560,7 +1641,7 @@ function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
         // Each item drops in as a notification: a round icon with its number, the words, "இப்போ" on the right.
         ctx.font = `50px ${TB}`;
         const w = Math.max(...o.items.map((it) => ctx.measureText(it).width)) + 300;
-        const fit = Math.min(1, 1180 / w);
+        const fit = Math.min(1, fitRoom(1180) / w);
         const n = o.items.length;
         ctx.save();
         ctx.translate(cx, cy);
@@ -1607,7 +1688,8 @@ function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
       }
       ctx.font = `50px ${TB}`;
       const w = Math.max(...o.items.map((it) => ctx.measureText(it).width)) + 140;
-      const fit = Math.min(1, 1080 / w);
+      // The slide-in starts 50 to the left, so that much is kept free too.
+      const fit = Math.min(1, fitRoom(1080, 100) / w);
       const n = o.items.length;
       ctx.save();
       ctx.translate(cx, cy);
@@ -1642,7 +1724,7 @@ function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
       const ws = o.items.map((it) => ctx.measureText(it).width + 76);
       const gap = 96;
       const total = ws.reduce((a, b) => a + b, 0) + gap * (ws.length - 1);
-      const fit = Math.min(1, 1120 / total);
+      const fit = Math.min(1, fitRoom(1120) / total);
       ctx.save();
       ctx.translate(cx, cy);
       ctx.scale(fit, fit);
@@ -1694,7 +1776,7 @@ function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
     }
     case "meter": {
       tag(ctx, o.label, cx, cy - 125, popIn(local, 0, 0.4), SNOW, P_BG, 42);
-      const W = 900;
+      const W = fitRoom(900, 28);
       const H = 64;
       const v = o.from + (o.to - o.from) * easeInOut(clamp01((local - 0.5) / Math.max(1.2, (l.end - l.start) * 0.5)));
       ctx.save();
@@ -1710,7 +1792,7 @@ function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
     case "warning": {
       // An amber-edged card that breathes, a hazard band along its top, a warning sign beside the words.
       const p = popIn(local, 0, 0.5);
-      const W = 1060;
+      const W = fitRoom(1060);
       const H = o.small ? 340 : 260;
       const breathe = 0.5 + 0.5 * Math.sin(local * 4);
       ctx.save();
@@ -1777,10 +1859,11 @@ function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
       const sw = o.small ? ctx.measureText(o.small).width : 0;
       const w = Math.max(tw, sw) + 170;
       const h = o.small ? 184 : 126;
+      const fit = Math.min(1, fitRoom(w) / w);
       ctx.save();
       ctx.globalAlpha = out * clamp01(p * 2);
       ctx.translate(cx, cy);
-      ctx.scale(0.8 + 0.2 * p, 0.8 + 0.2 * p);
+      ctx.scale((0.8 + 0.2 * p) * fit, (0.8 + 0.2 * p) * fit);
       chip(ctx, -w / 2, -h / 2, w, h, 28, DARK_CHIP);
       const mx = -w / 2 + 72;
       ctx.fillStyle = CORAL;
@@ -1810,7 +1893,7 @@ function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
       const shown = Math.floor(gs.length * clamp01((local - 0.15) / Math.max(1, Math.min(2.2, gs.length * 0.07))));
       ctx.font = `80px ${TB}`;
       const full = ctx.measureText(o.text).width;
-      const fit = Math.min(1, 900 / full);
+      const fit = Math.min(1, fitRoom(900, 128) / full);
       const p = rise(local, 0, 0.35);
       ctx.save();
       ctx.globalAlpha = out * p;
@@ -1851,6 +1934,79 @@ function drawPulseOverlay(ctx: SKRSContext2D, l: Timed, t: number, cx: number, c
         boxText(ctx, o.to, 0, 0, 92, TEAL, P_BG);
         ctx.restore();
       }
+      break;
+    }
+    case "word": {
+      // The Tamil word on a cream index card, an arrow drawing across, the English word flipping in on a highlighter-yellow card.
+      const at = wordAt(l) - l.start;
+      const H = 220;
+      ctx.font = `96px ${SH}`;
+      const wl = Math.max(ctx.measureText(o.ta).width + 120, 360);
+      ctx.font = `104px ${SH}`;
+      const wr = Math.max(ctx.measureText(o.en).width + 120, 360);
+      ctx.font = `34px ${TB}`;
+      const vw = o.via ? ctx.measureText(o.via).width + 60 : 0;
+      const gap = Math.max(200, vw + 40);
+      const total = wl + gap + wr;
+      const fit = Math.min(1, fitRoom(1300) / total);
+      const [labL, labR] = o.label ?? ["தமிழ்", "English"];
+      const x0 = -total / 2;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(fit, fit);
+      const card = (x: number, w: number, text: string, size: number, fill: string, label: string, labelFill: string, labelInk: string) => {
+        chip(ctx, x - w / 2, -H / 2, w, H, 30, fill);
+        ctx.fillStyle = P_BG;
+        ctx.font = `${size}px ${SH}`;
+        ctx.textAlign = "center";
+        ctx.fillText(text, x, 16, w - 60);
+        tag(ctx, label, x, -H / 2, 1, labelFill, labelInk, 30);
+      };
+      const pL = popIn(local, 0.05, 0.45);
+      if (pL > 0) {
+        ctx.save();
+        ctx.globalAlpha = out * clamp01(pL * 2);
+        ctx.translate(x0 + wl / 2, 0);
+        ctx.scale(0.85 + 0.15 * pL, 0.85 + 0.15 * pL);
+        card(0, wl, o.ta, 96, "#FFF8EA", labL, CORAL, SNOW);
+        ctx.restore();
+      }
+      // The arrow: a dashed red line drawing itself to the right, then its head.
+      const q = rise(local, 0.35, Math.max(0.3, at - 0.45));
+      if (q > 0) {
+        const a0 = x0 + wl + 22;
+        const a1 = a0 + (gap - 44) * q;
+        ctx.save();
+        ctx.strokeStyle = CORAL;
+        ctx.fillStyle = CORAL;
+        ctx.lineWidth = 9;
+        ctx.lineCap = "round";
+        ctx.setLineDash([22, 16]);
+        ctx.beginPath();
+        ctx.moveTo(a0, 0);
+        ctx.lineTo(a1 - 16, 0);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(a1, 0);
+        ctx.lineTo(a1 - 26, -20);
+        ctx.lineTo(a1 - 26, 20);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        if (o.via) tag(ctx, o.via, x0 + wl + gap / 2, -70, popIn(local, 0.5, 0.4), DARK_CHIP, SNOW, 34);
+      }
+      const pR = clamp01((local - at) / 0.5);
+      if (pR > 0) {
+        ctx.save();
+        ctx.globalAlpha = out * clamp01(pR * 3);
+        ctx.translate(x0 + wl + gap + wr / 2, 0);
+        ctx.scale(Math.max(0.02, easeOutBack(pR)), 1);
+        card(0, wr, o.en, 104, TEAL, labR, P_BG, SNOW);
+        ctx.restore();
+      }
+      ctx.restore();
+      if (o.small) tag(ctx, o.small, cx, cy + (H / 2) * fit + 70, popIn(local, at + 0.35, 0.4), DARK_CHIP, SNOW, 40);
       break;
     }
     case "stamp": {
@@ -2478,7 +2634,8 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
   STORY = b.video.look === "story";
   FEED = b.video.look === "feed";
   NIGHT = b.video.look === "night";
-  PULSE = b.video.look === "pulse" || FEED || NIGHT;
+  PAPER = b.video.look === "paper";
+  PULSE = b.video.look === "pulse" || FEED || NIGHT || PAPER;
   usePalette(b.video.look);
   CLEAN = !!b.video.clean || STORY || PULSE;
   loadTamilFonts();
@@ -2540,7 +2697,7 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
     if (quake) ctx.translate(quake * Math.sin(t * 90), quake * Math.cos(t * 70));
 
     // The pictures, crossfading over 0.7 s (1.2 s in the story look; sliding in, in the pulse look).
-    const XF = STORY ? 1.2 : PULSE ? 0.55 : 0.7;
+    const XF = STORY ? 1.2 : PAPER ? 0.75 : PULSE ? 0.55 : 0.7;
     const si = Math.max(0, stretches.findIndex((s) => t >= s.from && t < s.to));
     const st = stretches[si];
     const prog = (s: (typeof stretches)[number]) => clamp01((t - s.from + XF) / (s.to - s.from + 2 * XF));
@@ -2548,8 +2705,52 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       drawPulseBackdrop(ctx, t);
       const c = pulseCard();
       const u = si > 0 ? easeInOut(clamp01((t - st.from) / XF)) : 1;
-      // Pulse slides the next picture in from the right; the feed swipes it up from below, like a Short; the night dissolves it in.
-      if (NIGHT) {
+      // Pulse slides the next picture in from the right; the feed swipes it up from below, like a Short; the night dissolves it in;
+      // the paper look flips the taped photo over to the next one.
+      if (PAPER) {
+        const flip = (k: number, sx: number) => {
+          const s = stretches[k];
+          const mid = c.x + c.w / 2;
+          ctx.save();
+          ctx.translate(mid, 0);
+          ctx.scale(Math.max(0.002, sx), 1);
+          ctx.translate(-mid, 0);
+          // The white photo border with its shadow on the page.
+          chip(ctx, c.x - 14, c.y - 14, c.w + 28, c.h + 28, c.r + 8, "#FFFFFF");
+          drawPulsePicture(ctx, pictures[s.key], s.key, prog(s), k, 0);
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(c.x, c.y, c.w, c.h, c.r);
+          ctx.clip();
+          ctx.fillStyle = shade(0.18);
+          ctx.fillRect(c.x, c.y, c.w, c.h);
+          const low = ctx.createLinearGradient(0, c.y + c.h * 0.55, 0, c.y + c.h);
+          low.addColorStop(0, shade(0));
+          low.addColorStop(1, shade(0.5));
+          ctx.fillStyle = low;
+          ctx.fillRect(c.x, c.y, c.w, c.h);
+          // While it turns, the far side darkens like a card catching less light.
+          if (sx < 1) {
+            ctx.fillStyle = shade(0.5 * (1 - sx));
+            ctx.fillRect(c.x, c.y, c.w, c.h);
+          }
+          ctx.restore();
+          // Two strips of tape holding the photo at its top corners.
+          for (const side of [-1, 1]) {
+            ctx.save();
+            ctx.translate(side < 0 ? c.x + 40 : c.x + c.w - 40, c.y + 4);
+            ctx.rotate(side * 0.62);
+            ctx.fillStyle = "rgba(255,226,150,0.78)";
+            ctx.fillRect(-85, -24, 170, 48);
+            ctx.fillStyle = "rgba(255,255,255,0.25)";
+            ctx.fillRect(-85, -24, 170, 10);
+            ctx.restore();
+          }
+          ctx.restore();
+        };
+        if (si > 0 && u < 0.5) flip(si - 1, 1 - easeInOut(u * 2));
+        else flip(si, si > 0 ? easeOut((u - 0.5) * 2) : 1);
+      } else if (NIGHT) {
         if (u < 1) drawPulsePicture(ctx, pictures[stretches[si - 1].key], stretches[si - 1].key, prog(stretches[si - 1]), si - 1, 0);
         ctx.save();
         ctx.globalAlpha = u;
@@ -2562,6 +2763,8 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
         if (u < 1) drawPulsePicture(ctx, pictures[stretches[si - 1].key], stretches[si - 1].key, prog(stretches[si - 1]), si - 1, -u * c.w);
         drawPulsePicture(ctx, pictures[st.key], st.key, prog(st), si, (1 - u) * c.w);
       }
+      // The paper look shades and frames its photo itself, inside the flip.
+      if (!PAPER) {
       ctx.save();
       ctx.beginPath();
       ctx.roundRect(c.x, c.y, c.w, c.h, c.r);
@@ -2607,6 +2810,7 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       ctx.beginPath();
       ctx.roundRect(c.x, c.y, c.w, c.h, c.r);
       ctx.stroke();
+      }
     } else {
       drawPicture(ctx, pictures[st.key], st.key, prog(st), si);
       const fadeIn = clamp01((t - st.from) / XF);
@@ -2743,6 +2947,53 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       ctx.fillStyle = SNOW;
       ctx.font = `34px ${TB}`;
       ctx.fillText(ch.name, tw + 22, 31);
+      ctx.restore();
+    } else if (ch && PAPER && cardT < CHAPTER_GAP + 0.4) {
+      // A fresh notebook page slides up over everything, the chapter written on it and highlighted, then slides on up and away.
+      const inU = easeInOut(clamp01(cardT / 0.55));
+      const outU = easeInOut(clamp01((cardT - CHAPTER_GAP) / 0.45));
+      const y = F.h * (1 - inU) - (F.h + 60) * outU;
+      ctx.save();
+      ctx.translate(0, y);
+      ctx.save();
+      ctx.shadowColor = "rgba(40,30,10,0.4)";
+      ctx.shadowBlur = 50;
+      ctx.shadowOffsetY = -10;
+      ctx.fillStyle = PAPER_BG;
+      ctx.fillRect(0, 0, F.w, F.h);
+      ctx.restore();
+      drawPaper(ctx);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      const half = Math.min(areaX, F.w - areaX) - edge();
+      // The number, huge and faint behind.
+      ctx.font = `460px ${SH}`;
+      ctx.fillStyle = shade(0.07);
+      ctx.fillText(num, areaX, F.chapterY - 10);
+      const p = rise(cardT, 0.35, 0.5);
+      ctx.globalAlpha = p;
+      ctx.font = `50px ${SH}`;
+      ctx.fillStyle = CORAL;
+      ctx.fillText(b.video.countdown ? `நம்பர் ${rankOf(ch.no)}` : `அத்தியாயம் ${num}`, areaX, F.chapterY - 150 + 16 * (1 - p));
+      ctx.font = `124px ${SH}`;
+      const nameW = ctx.measureText(ch.name).width;
+      const fit = Math.min(1, (2 * half) / (nameW + 60));
+      ctx.save();
+      ctx.translate(areaX, F.chapterY + 10 + 16 * (1 - p));
+      ctx.scale(fit, fit);
+      // The highlighter stroke, swept left to right behind the lower half of the words.
+      const hl = rise(cardT, 0.6, 0.55);
+      ctx.fillStyle = `rgba(${ACCRGB},0.75)`;
+      ctx.beginPath();
+      ctx.roundRect(-nameW / 2 - 30, 0, (nameW + 60) * hl, 62, 10);
+      ctx.fill();
+      ctx.fillStyle = P_BG;
+      ctx.fillText(ch.name, 0, 0);
+      ctx.restore();
+      // A red pen underline.
+      const u = rise(cardT, 0.8, 0.5);
+      ctx.fillStyle = CORAL;
+      ctx.fillRect(areaX - 240 * u, F.chapterY + 120, 480 * u, 6);
       ctx.restore();
     } else if (ch && FEED && cardT < CHAPTER_GAP + 0.4) {
       // A notification drops in over the dimmed screen: the app's icon with the chapter number, the chapter as its message.
@@ -2948,6 +3199,7 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       ctx.translate(areaX, F.overlayY);
       ctx.scale(F.overlayScale, F.overlayScale);
       ctx.translate(-areaX, -F.overlayY);
+      setRoom(areaX);
       drawOverlay(ctx, l, t, areaX, F.overlayY);
       ctx.restore();
     }
@@ -2977,8 +3229,9 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
     }
 
     const sub = subtitleAt(b.lines, t);
-    if (sub && PULSE) drawPulseSubtitle(ctx, sub, t, areaX, mode > 0.5 ? F.subW[1] : F.subW[0]);
-    else if (sub) drawSubtitle(ctx, sub.text, areaX, mode > 0.5 ? F.subW[1] : F.subW[0]);
+    const subWant = mode > 0.5 ? F.subW[1] : F.subW[0];
+    if (sub && PULSE) drawPulseSubtitle(ctx, sub, t, areaX, subRoom(areaX, subWant, 64));
+    else if (sub) drawSubtitle(ctx, sub.text, areaX, subRoom(areaX, subWant, 24));
 
     // How far along the video is, along the top edge (in the pulse look, in segments, one per chapter).
     if (F.progress && PULSE) {
@@ -2987,7 +3240,7 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       for (let k = 0; k + 1 < marks.length; k++) {
         const a = marks[k] * F.w + (k ? 4 : 0);
         const z = marks[k + 1] * F.w - (k + 2 < marks.length ? 4 : 0);
-        ctx.fillStyle = "rgba(255,255,255,0.16)";
+        ctx.fillStyle = PAPER ? shade(0.12) : "rgba(255,255,255,0.16)";
         ctx.fillRect(a, 0, z - a, 6);
         ctx.fillStyle = TEAL;
         ctx.fillRect(a, 0, Math.max(0, Math.min(z, done * F.w) - a), 6);
@@ -3003,7 +3256,7 @@ export async function framePainter(b: Built, height: number, frame: Frame = WIDE
       ctx.font = `30px ${TS}`;
       ctx.textAlign = "right";
       ctx.textBaseline = "top";
-      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.fillStyle = PAPER ? shade(0.7) : "rgba(255,255,255,0.75)";
       ctx.fillText(HANDLE, F.w - 36, F.handleY);
     }
     if (F.tag) pill(ctx, F.tag, F.w / 2, 170, 36, YELLOW, INK);
@@ -3058,7 +3311,7 @@ export async function renderExplainer(b: Built, outPath: string, workDir: string
   const musicPath = join(workDir, "music.wav");
   const sfxPath = join(workDir, "sfx.wav");
   await writeFile(voicePath, voiceWav);
-  const bed = { pulse: pulseMusic, lofi: lofiMusic, night: nightMusic, calm: calmMusic }[b.video.music ?? "calm"];
+  const bed = { pulse: pulseMusic, lofi: lofiMusic, night: nightMusic, bright: brightMusic, calm: calmMusic }[b.video.music ?? "calm"];
   await writeFile(musicPath, bed(b.duration + 0.5, musicSeed));
   await writeFile(sfxPath, sfxTrack(b.duration + 0.5, b.sfx));
 

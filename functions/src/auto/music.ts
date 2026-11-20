@@ -402,6 +402,106 @@ export function nightMusic(seconds: number, seed: number): Buffer {
   return stereoWav(roomL, roomR);
 }
 
+/**
+ * A light, curious bed for the paper-look explainers, synthesised from scratch:
+ * a marimba bouncing through C → G → Am → F at 104 BPM, a plucked upright-ish bass,
+ * a soft shaker on the sixteenths, a gentle kick and finger snap. First two bars
+ * marimba only; every eighth bar drops the drums so it breathes. Major key, so it
+ * feels like discovering something, and quiet enough to sit under a voice.
+ */
+export function brightMusic(seconds: number, seed: number): Buffer {
+  const BPM = 104;
+  const beat = 60 / BPM;
+  const bar = beat * 4;
+  const n = Math.round(SR * seconds);
+  const wetL = new Float32Array(n);
+  const wetR = new Float32Array(n);
+  const dry = new Float32Array(n);
+  let state = (Math.abs(Math.floor(seed)) % 2147483646) + 1;
+  const rnd = () => (state = (state * 16807) % 2147483647) / 2147483647;
+  const chords = [
+    { notes: [60, 64, 67, 72], root: 36 },
+    { notes: [59, 62, 67, 71], root: 43 },
+    { notes: [60, 64, 69, 72], root: 45 },
+    { notes: [60, 65, 69, 72], root: 41 },
+  ];
+  const each = (start: number, len: number, f: (t: number, i: number) => void) => {
+    const i0 = Math.round(start * SR);
+    const count = Math.min(n - i0, Math.round(len * SR));
+    for (let i = 0; i < count; i++) f(i / SR, i0 + i);
+  };
+  // Marimba: the note with its woody 4th partial that dies almost at once.
+  const marimba = (at: number, freq: number, vel: number, pan: number) =>
+    each(at, 1.1, (t, i) => {
+      const env = Math.min(1, t / 0.002) * Math.exp(-t * 4.5);
+      const x = (Math.sin(2 * Math.PI * freq * t) + 0.5 * Math.exp(-t * 30) * Math.sin(2 * Math.PI * freq * 4 * t) + 0.12 * Math.exp(-t * 12) * Math.sin(2 * Math.PI * freq * 10 * t)) * env * vel;
+      wetL[i] += x * (1 - pan);
+      wetR[i] += x * pan;
+    });
+  const pad = (at: number, freq: number, len: number) =>
+    each(at, len, (t, i) => {
+      const env = Math.sin(Math.PI * Math.min(1, t / len)) ** 1.5 * 0.014;
+      wetL[i] += Math.sin(2 * Math.PI * freq * 0.997 * t) * env;
+      wetR[i] += Math.sin(2 * Math.PI * freq * 1.003 * t) * env;
+    });
+  const bass = (at: number, freq: number, len: number) =>
+    each(at, len, (t, i) => {
+      const env = Math.min(1, t / 0.006) * Math.exp(-t * 5) * (t > len - 0.04 ? (len - t) / 0.04 : 1);
+      const w = 2 * Math.PI * freq * t;
+      dry[i] += (Math.sin(w) + 0.3 * Math.exp(-t * 14) * Math.sin(2 * w)) * env * 0.2;
+    });
+  const kick = (at: number) =>
+    each(at, 0.28, (t, i) => {
+      dry[i] += Math.sin(2 * Math.PI * (50 * t + (60 / 22) * (1 - Math.exp(-t * 22)))) * Math.exp(-t * 12) * 0.34;
+    });
+  const snap = (at: number) => {
+    let last = 0;
+    each(at, 0.12, (t, i) => {
+      const noise = rnd() * 2 - 1;
+      dry[i] += (noise - last) * Math.exp(-t * 45) * 0.07 + Math.sin(2 * Math.PI * 1300 * t) * Math.exp(-t * 90) * 0.03;
+      last = noise;
+    });
+  };
+  const shaker = (at: number, vel: number) => {
+    let last = 0;
+    each(at, 0.07, (t, i) => {
+      const noise = rnd() * 2 - 1;
+      dry[i] += (noise - last) * Math.min(1, t / 0.012) * Math.exp(-t * 55) * vel;
+      last = noise;
+    });
+  };
+
+  const offset = Math.abs(Math.floor(seed)) % chords.length;
+  for (let b = 0; b * bar < seconds; b++) {
+    const at = b * bar;
+    const chord = chords[(b + offset) % chords.length];
+    chord.notes.slice(0, 3).forEach((m) => pad(at, midi(m), bar));
+    // A bouncy pattern on the eighths, now and then a note left out, a little pickup at the end of the bar.
+    const pattern = [0, 2, 1, 3, 2, 0, 3, 1].map((j) => chord.notes[j] + 12);
+    pattern.forEach((m, k) => {
+      if (k > 0 && k !== 7 && rnd() < 0.2) return;
+      marimba(at + k * beat * 0.5 + (rnd() - 0.5) * 0.008, midi(m), (k % 2 ? 0.035 : 0.05) + rnd() * 0.01, 0.25 + rnd() * 0.5);
+    });
+    bass(at, midi(chord.root), beat * 0.9);
+    bass(at + beat * 1.5, midi(chord.root + 12), beat * 0.4);
+    bass(at + beat * 2, midi(chord.root + 7), beat * 0.9);
+    bass(at + beat * 3.5, midi(chord.root + 9), beat * 0.4);
+    if (b < 2 || b % 8 === 7) continue;
+    kick(at);
+    kick(at + beat * 2);
+    snap(at + beat);
+    snap(at + beat * 3);
+    for (let k = 0; k < 16; k++) shaker(at + k * beat * 0.25, k % 4 === 2 ? 0.045 : k % 2 ? 0.018 : 0.028);
+  }
+  const roomL = room(wetL, 0);
+  const roomR = room(wetR, 23);
+  for (let s = 0; s < n; s++) {
+    roomL[s] += dry[s];
+    roomR[s] += dry[s];
+  }
+  return stereoWav(roomL, roomR);
+}
+
 /** 16-bit stereo WAV of the two channels, brought to a peak of 0.7, faded in and out. */
 function stereoWav(wetL: Float32Array, wetR: Float32Array): Buffer {
   const n = wetL.length;
